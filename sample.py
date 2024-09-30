@@ -5,12 +5,13 @@ import time
 # Define constants
 SEQUENCE_LENGTH = 128  # Length of the input sequence
 HEAD_SIZE = 64         # Size of each attention head
+BATCH_COUNT = 2
 ITERATIONS = 1000      # Number of iterations for benchmarking
 
 # Create random data for our input tensors (Q, K, V)
-query_data = np.random.randn(SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
-key_data = np.random.randn(SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
-value_data = np.random.randn(SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
+query_data = np.random.randn(BATCH_COUNT, SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
+key_data = np.random.randn(BATCH_COUNT, SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
+value_data = np.random.randn(BATCH_COUNT, SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
 
 # Flatten the tensors to 1D arrays for MLX processing
 flat_query = query_data.flatten()
@@ -37,10 +38,14 @@ constexpr uint HEAD_SIZE = 64;
     uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]],
     uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]],
     uint3 threads_per_threadgroup [[threads_per_threadgroup]]);
-    // Calculate the global thread ID
-    uint i = (threadgroup_position_in_grid.x * threads_per_threadgroup.x) + thread_position_in_threadgroup.x;
+    
+    // Calculate total sequence length
+    uint total_seq = SEQ_LEN * BATCH_COUNT;
 
-    if (i >= SEQ_LEN) return;
+    // Calculate the global thread ID
+    uint gid = (threadgroup_position_in_grid.x * threads_per_threadgroup.x) + thread_position_in_threadgroup.x;
+
+    if (gid >= total_seq) return;
 
     // Compute Q_i * K_j^T for all j
     float scores[SEQ_LEN];

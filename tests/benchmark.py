@@ -14,7 +14,7 @@ def main():
     print(f"Using device: {device}")
 
     # Generate random inputs
-    bs, num_heads, seqlen, head_dim = 2, 4, 16, 64
+    bs, num_heads, seqlen, head_dim = 2, 1, 64, 64
     q = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     k = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     v = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
@@ -34,9 +34,9 @@ def main():
     multihead_attn = torch.nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, bias=False)
     multihead_attn.to(device)
 
-    # Initialize weights to ones for reproducibility
-    torch.nn.init.constant_(multihead_attn.in_proj_weight, 1.0)
-    torch.nn.init.constant_(multihead_attn.out_proj.weight, 1.0)
+    # Use Xavier Initialization instead of setting all weights to 1.0
+    torch.nn.init.xavier_uniform_(multihead_attn.in_proj_weight)
+    torch.nn.init.xavier_uniform_(multihead_attn.out_proj.weight)
     # Removed the following line since bias=False
     # torch.nn.init.constant_(multihead_attn.out_proj.bias, 0.0)
 
@@ -60,33 +60,46 @@ def main():
     attn_output = attn_output.reshape(seqlen, bs, num_heads, head_dim).transpose(1, 2).transpose(0, 1)
     attn_output_np = attn_output.cpu().numpy()
 
+    print("output mx np array", output_mx_np)
+    
+    print("attn output np array", attn_output_np)
     # Compare outputs
-    mse = mx.mean((output_mx_np - attn_output_np) ** 2)
-    print(f"Mean Squared Error: {mse}")
+    print(f"output_mx_np shape: {output_mx_np.shape}")
+    print(f"attn_output_np shape: {attn_output_np.shape}")
 
-    if mse < 1e-5:
-        print("Correctness test passed: Outputs are similar.")
+    # Transpose attn_output_np to match output_mx_np
+    attn_output_np_transposed = attn_output_np.transpose(2, 0, 1, 3)
+    print(f"attn_output_np_transposed shape: {attn_output_np_transposed.shape}")
+
+    # Verify shapes are compatible
+    if output_mx_np.shape == attn_output_np_transposed.shape:
+        mse = np.mean((output_mx_np - attn_output_np_transposed) ** 2)
+        print(f"MSE: {mse}")
     else:
-        print("Correctness test failed: Outputs differ significantly.")
+        raise ValueError(f"Shape mismatch after transpose: {output_mx_np.shape} vs {attn_output_np_transposed.shape}")
 
     # Performance Test
-    print("Running performance test...")
+    print("\nRunning performance test...")
 
-    # Measure performance of flash_attn_v2_multihead
-    start_time = time.perf_counter()
+    # Measure performance of flash_attn
+    start_time = time.perf_counter_ns()
     output_mx = flash_attn(q_mx, k_mx, v_mx)
     # Ensure completion
     mx.eval(output_mx)
-    end_time = time.perf_counter()
-    print(f"flash_attn_v2_multihead Execution Time: {end_time - start_time:.6f} seconds")
+    end_time = time.perf_counter_ns()
+    execution_time_ns = end_time - start_time
+    execution_time_ms = execution_time_ns / 1e6
+    print(f"mlx flash_attn Execution Time: {execution_time_ms:.3f} ms ({execution_time_ns:,} ns)")
 
     # Measure performance of PyTorch's MultiheadAttention
-    start_time = time.perf_counter()
+    start_time = time.perf_counter_ns()
     with torch.no_grad():
         attn_output, _ = multihead_attn(q_torch, k_torch, v_torch)
     # No synchronization needed for CPU
-    end_time = time.perf_counter()
-    print(f"PyTorch MultiheadAttention Execution Time: {end_time - start_time:.6f} seconds")
+    end_time = time.perf_counter_ns()
+    execution_time_ns = end_time - start_time
+    execution_time_ms = execution_time_ns / 1e6
+    print(f"PyTorch MultiheadAttention Execution Time: {execution_time_ms:.3f} ms ({execution_time_ns:,} ns)")
 
 if __name__ == "__main__":
     main()

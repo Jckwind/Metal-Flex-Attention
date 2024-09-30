@@ -1,29 +1,35 @@
 import mlx.core as mx
+import math
 
 @mx.compile
-def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M=4):
+def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = None):
     """
-    The tiny flash attention implement
+    Optimized flash attention implementation with scaling and reduced redundancy.
     """
-    assert q.shape == k.shape
-    assert q.shape == v.shape
+    assert q.shape == k.shape, "Query, Key, and Value must have the same shape."
+    assert q.shape == v.shape, "Query, Key, and Value must have the same shape."
 
     # Create output buffer in HBM.
     output_buffer = mx.zeros(v.shape)
 
+    # Split Q, K, V into blocks along the sequence length axis.
     Q_BLOCKS = mx.split(q, BLOCK_M, axis=-2)
     K_BLOCKS = mx.split(k, BLOCK_M, axis=-2)
     V_BLOCKS = mx.split(v, BLOCK_M, axis=-2)
 
     bs, head, seqlen, headdim = q.shape
+    print(q.shape)
 
-    seqlen = q.shape[-2] // BLOCK_M
-    for j in range(seqlen):
-        qi = Q_BLOCKS[j]
+    # Scaling factor as used in PyTorch's MultiheadAttention
+    scale = 1.0 / math.sqrt(headdim)
+
+    num_blocks = seqlen // BLOCK_M
+    for j in range(num_blocks):
+        qi = Q_BLOCKS[j] * scale  # Apply scaling to queries
         old_o = output_buffer[..., j * BLOCK_M : (j + 1) * BLOCK_M, :]
-        # Create denominator buffer in HBM.
+        
+        # Initialize denominator and maximum buffers in HBM.
         old_d = mx.zeros((bs, head, BLOCK_M, 1))
-        # Create max(x) buffer in HBM.
         old_m = mx.full((bs, head, BLOCK_M, 1), -mx.inf)
 
         k_block_num = k.shape[-2] // BLOCK_M
@@ -31,34 +37,40 @@ def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M=4):
             kj = K_BLOCKS[i]
             vj = V_BLOCKS[i]
 
-            # Compute qk.
-            x_qkt = mx.softmax(qi @ kj.transpose(2, 3), axis=-1)
-            # Get local max of qk.
-            # keepdim to avoid auto squeeze.
-            # torch.max() return (max, max_index)
+            # Compute QK^T and apply softmax.
+            x_qkt = mx.softmax(qi @ kj.transpose(0, 1, 3, 2), axis=-1)
+            
+            # Compute the maximum for numerical stability.
             local_m = mx.max(x_qkt, axis=-1, keepdims=True)
 
-            # Compute new max.
+            # Update the global maximum.
             new_m = mx.maximum(old_m, local_m)
-            # Compute numerator. i.e.: e^{x - max(x)}.
+            
+            # Compute the exponentials safely.
             safe_e = mx.exp(x_qkt - new_m)
-            # Compute new part of denominator.
+            
+            # Update the denominator.
             curr_d = mx.sum(safe_e, axis=-1, keepdims=True)
-            # Update denominator.
             new_d = old_d * mx.exp(old_m - new_m) + curr_d
-            # Update old output and accumulate new output.
+            
+            # Accumulate the output.
             new_o = old_o * mx.exp(old_m - new_m) + safe_e @ vj
 
+            # Update buffers for the next iteration.
             old_m = new_m
             old_d = new_d
             old_o = new_o
 
+        # Normalize and store the output.
         output_buffer[..., j * BLOCK_M : (j + 1) * BLOCK_M, :] = old_o / old_d
 
     return output_buffer
 
-def flash_attn(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = 4) -> mx.array:
+def flash_attn(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = 8) -> mx.array:
     """
-    Memory effective flash attention implement
+    Memory-efficient flash attention implementation.
     """
+    _, _, seqlen, _ = q.shape
+    if seqlen % BLOCK_M != 0:
+        raise ValueError(f"BLOCK_M ({BLOCK_M}) must evenly divide the sequence length ({seqlen})")
     return flash_attn_v2_multihead(q, k, v, BLOCK_M=BLOCK_M)
