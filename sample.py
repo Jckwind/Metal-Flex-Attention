@@ -1,9 +1,11 @@
 import mlx.core as mx
 import numpy as np
+import time
 
 # Define constants
 SEQUENCE_LENGTH = 128  # Length of the input sequence
-HEAD_SIZE = 64  # Size of each attention head
+HEAD_SIZE = 64         # Size of each attention head
+ITERATIONS = 1000      # Number of iterations for benchmarking
 
 # Create random data for our input tensors (Q, K, V)
 query_data = np.random.randn(SEQUENCE_LENGTH, HEAD_SIZE).astype(np.float32)
@@ -88,26 +90,70 @@ kernel = mx.fast.metal_kernel(
     source=source,
 )
 
-# Run the kernel
-result = kernel(
-    inputs=[query_mlx, key_mlx, value_mlx],
-    output_shapes=[(SEQUENCE_LENGTH * HEAD_SIZE,)],
-    output_dtypes=[mx.float32],
-    grid=(1, 1, 1),
-    threadgroup=(128, 1, 1),
-    verbose=True,
-)
+def mlx_attention():
+    """Performs attention using the MLX (Metal) implementation."""
+    result = kernel(
+        inputs=[query_mlx, key_mlx, value_mlx],
+        output_shapes=[(SEQUENCE_LENGTH * HEAD_SIZE,)],
+        output_dtypes=[mx.float32],
+        grid=(1, 1, 1),
+        threadgroup=(128, 1, 1),
+        verbose=False,
+    )
+    output_array = result[0].reshape(SEQUENCE_LENGTH, HEAD_SIZE)
+    return output_array
 
-# Reshape the result back into a 2D array
-output_array = result[0].reshape(SEQUENCE_LENGTH, HEAD_SIZE)
-print("Metal Kernel Attention Array:", output_array)
-print("Metal Kernel Attention Shape:", output_array.shape)
+def numpy_attention():
+    """Performs attention using the NumPy implementation."""
+    scores = np.matmul(query_data, key_data.T) / np.sqrt(HEAD_SIZE)
+    max_scores = np.max(scores, axis=1, keepdims=True)
+    scores = np.exp(scores - max_scores)
+    weights = scores / np.sum(scores, axis=1, keepdims=True)
+    expected_output = np.matmul(weights, value_data)
+    return expected_output
 
-# Compute expected output using NumPy
-scores = np.matmul(query_data, key_data.T) / np.sqrt(HEAD_SIZE)
-max_scores = np.max(scores, axis=1, keepdims=True)
-scores = np.exp(scores - max_scores)
-weights = scores / np.sum(scores, axis=1, keepdims=True)
-expected_output = np.matmul(weights, value_data)
-print("Numpy Attention Array:", expected_output)
-print("Numpy Attention Shape", expected_output.shape)
+def benchmark():
+    """Benchmarks both MLX and NumPy attention implementations."""
+    # Warm up runs to mitigate any initial overhead
+    mlx_attention()
+    numpy_attention()
+
+    mlx_times = []
+    numpy_times = []
+
+    for _ in range(ITERATIONS):
+        # Benchmark MLX Attention
+        start_time = time.perf_counter()
+        mlx_attention()
+        end_time = time.perf_counter()
+        mlx_times.append(end_time - start_time)
+
+        # Benchmark NumPy Attention
+        start_time = time.perf_counter()
+        numpy_attention()
+        end_time = time.perf_counter()
+        numpy_times.append(end_time - start_time)
+
+    # Calculate average times in milliseconds
+    avg_mlx_time = (sum(mlx_times) / ITERATIONS) * 1e3
+    avg_numpy_time = (sum(numpy_times) / ITERATIONS) * 1e3
+
+    print(f"Average MLX Attention Time over {ITERATIONS} runs: {avg_mlx_time:.6f} ms")
+    print(f"Average NumPy Attention Time over {ITERATIONS} runs: {avg_numpy_time:.6f} ms")
+
+def main():
+    """Main function to execute attention and benchmark."""
+    # Execute attention once to display results
+    output_mlx = mlx_attention()
+    print("Metal Kernel Attention Array:", output_mlx)
+    print("Metal Kernel Attention Shape:", output_mlx.shape)
+
+    expected_output = numpy_attention()
+    print("Numpy Attention Array:", expected_output)
+    print("Numpy Attention Shape:", expected_output.shape)
+
+    # Perform benchmarking
+    benchmark()
+
+if __name__ == "__main__":
+    main()
