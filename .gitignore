@@ -1,0 +1,10 @@
+__pycache__
+*.egg-info
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+*.lib
+*.a
