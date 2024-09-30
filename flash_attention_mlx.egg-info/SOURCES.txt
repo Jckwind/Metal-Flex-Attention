@@ -1,0 +1,11 @@
+README.md
+setup.py
+flash_attention/__init__.py
+flash_attention/flash_atten_v2.py
+flash_attention_mlx.egg-info/PKG-INFO
+flash_attention_mlx.egg-info/SOURCES.txt
+flash_attention_mlx.egg-info/dependency_links.txt
+flash_attention_mlx.egg-info/requires.txt
+flash_attention_mlx.egg-info/top_level.txt
+tests/__init__.py
+tests/benchmark.py
