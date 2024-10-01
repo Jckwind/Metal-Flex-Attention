@@ -10,11 +10,11 @@ def main():
     np.random.seed(42)
 
     # Determine device (force to CPU)
-    device = torch.device("cpu")
+    device = torch.device("mps")
     print(f"Using device: {device}")
 
     # Generate random inputs
-    bs, num_heads, seqlen, head_dim = 1, 32, 8196, 128
+    bs, num_heads, seqlen, head_dim = 1, 32, 8192, 128
     q = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     k = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     v = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
@@ -59,7 +59,7 @@ def main():
     attn_output_np = attn_output.cpu().numpy()
 
     print("output mx np array", output_mx_np)
-    
+
     print("attn output np array", attn_output_np)
     # Compare outputs
     print(f"output_mx_np shape: {output_mx_np.shape}")
@@ -81,7 +81,7 @@ def main():
 
     # Measure performance of flash_attn
     start_time = time.perf_counter_ns()
-    output_mx = flash_attn(q_mx, k_mx, v_mx)
+    output_mx = flash_attn(q_mx, k_mx, v_mx, BLOCK_M=8)
     # Ensure completion
     mx.eval(output_mx)
     end_time = time.perf_counter_ns()
