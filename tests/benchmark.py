@@ -14,7 +14,7 @@ def main():
     print(f"Using device: {device}")
 
     # Generate random inputs
-    bs, num_heads, seqlen, head_dim = 2, 1, 64, 64
+    bs, num_heads, seqlen, head_dim = 1, 32, 4096, 128
     q = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     k = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     v = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
@@ -30,15 +30,14 @@ def main():
     v_mx = mx.array(v_np)
 
     # Initialize PyTorch MultiheadAttention
-    embed_dim = head_dim
+    embed_dim = num_heads * head_dim  # Changed from head_dim to num_heads * head_dim
     multihead_attn = torch.nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, bias=False)
     multihead_attn.to(device)
 
     # Use Xavier Initialization instead of setting all weights to 1.0
     torch.nn.init.xavier_uniform_(multihead_attn.in_proj_weight)
     torch.nn.init.xavier_uniform_(multihead_attn.out_proj.weight)
-    # Removed the following line since bias=False
-    # torch.nn.init.constant_(multihead_attn.out_proj.bias, 0.0)
+
 
     # Correctness Test
     print("Running correctness test...")

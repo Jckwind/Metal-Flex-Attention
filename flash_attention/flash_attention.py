@@ -1,8 +1,9 @@
 import mlx.core as mx
 import math
+from typing import Optional
 
 @mx.compile
-def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = None):
+def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: Optional[int] = None):
     """
     Optimized flash attention implementation with scaling and reduced redundancy.
     """
@@ -32,13 +33,14 @@ def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int 
         old_d = mx.zeros((bs, head, BLOCK_M, 1))
         old_m = mx.full((bs, head, BLOCK_M, 1), -mx.inf)
 
-        k_block_num = k.shape[-2] // BLOCK_M
+        k_block_num = seqlen // BLOCK_M
         for i in range(k_block_num):
             kj = K_BLOCKS[i]
             vj = V_BLOCKS[i]
 
             # Compute QK^T and apply softmax.
-            x_qkt = mx.softmax(qi @ kj.transpose(0, 1, 3, 2), axis=-1)
+            # Changed from using the @ operator to mx.matmul for explicit axis handling
+            x_qkt = mx.softmax(mx.matmul(qi, kj.transpose(0, 1, 3, 2)), axis=-1)
             
             # Compute the maximum for numerical stability.
             local_m = mx.max(x_qkt, axis=-1, keepdims=True)
@@ -54,7 +56,7 @@ def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int 
             new_d = old_d * mx.exp(old_m - new_m) + curr_d
             
             # Accumulate the output.
-            new_o = old_o * mx.exp(old_m - new_m) + safe_e @ vj
+            new_o = old_o * mx.exp(old_m - new_m) + mx.matmul(safe_e, vj)
 
             # Update buffers for the next iteration.
             old_m = new_m
@@ -66,7 +68,7 @@ def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int 
 
     return output_buffer
 
-def flash_attn(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = 8) -> mx.array:
+def flash_attn(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = 64) -> mx.array:
     """
     Memory-efficient flash attention implementation.
     """
