@@ -14,7 +14,7 @@ def main():
     print(f"Using device: {device}")
 
     # Generate random inputs
-    bs, num_heads, seqlen, head_dim = 1, 32, 4096, 128
+    bs, num_heads, seqlen, head_dim = 1, 32, 8196, 128
     q = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     k = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
     v = torch.randn(bs, num_heads, seqlen, head_dim, device=device)
@@ -37,7 +37,6 @@ def main():
     # Use Xavier Initialization instead of setting all weights to 1.0
     torch.nn.init.xavier_uniform_(multihead_attn.in_proj_weight)
     torch.nn.init.xavier_uniform_(multihead_attn.out_proj.weight)
-
 
     # Correctness Test
     print("Running correctness test...")
