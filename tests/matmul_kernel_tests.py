@@ -43,6 +43,44 @@ class TestMatmulKernel(unittest.TestCase):
         problem.show()
         self.assertFalse(problem.check(), "Full matmul test passed")
 
+    def test_matmul_zero_matrix(self):
+        SIZE = 4
+        a = mx.zeros((SIZE, SIZE), dtype=mx.float32)
+        b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
+        output_shape = (SIZE, SIZE)
+
+        problem = MetalProblem(
+            "Matrix Multiplication (Zero Matrix)",
+            matmul_kernel,
+            [a, b],
+            output_shape,
+            grid=(9, 9, 1),
+            threadgroup=(3, 3, 1),
+            spec=matmul_spec
+        )
+
+        problem.show()
+        self.assertFalse(problem.check(), "Zero matrix matmul test passed")
+
+    def test_matmul_identity_matrix(self):
+        SIZE = 5
+        a = mx.eye(SIZE, dtype=mx.float32)
+        b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE))
+        output_shape = (SIZE, SIZE)
+
+        problem = MetalProblem(
+            "Matrix Multiplication (Identity Matrix)",
+            matmul_kernel,
+            [a, b],
+            output_shape,
+            grid=(9, 9, 1),
+            threadgroup=(3, 3, 1),
+            spec=matmul_spec
+        )
+
+        problem.show()
+        self.assertFalse(problem.check(), "Identity matrix matmul test passed")
+
     def test_benchmark_matmul(self):
         SIZE = 512  # Increased size for more realistic benchmarking
         NUM_RUNS = 1000
