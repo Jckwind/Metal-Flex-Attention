@@ -2,110 +2,70 @@ import mlx.core as mx
 import math
 
 @mx.compile
-def flash_attn_v2_multihead(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int):
+def flash_attn_v2_multihead_optimized(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int):
     """
     Optimized flash attention implementation with scaling and reduced redundancy.
+    Assumes that the sequence length is evenly divisible by BLOCK_M.
     """
-    assert q.shape == k.shape, "Query, Key, and Value must have the same shape."
-    assert q.shape == v.shape, "Query, Key, and Value must have the same shape."
-
-    # Create output buffer in HBM.
-    output_buffer = mx.zeros(v.shape)
+    assert q.shape == k.shape == v.shape, "Query, Key, and Value must have the same shape."
 
     bs, head, seqlen, headdim = q.shape
-    print(q.shape)
+    assert seqlen % BLOCK_M == 0, f"Sequence length ({seqlen}) must be divisible by BLOCK_M ({BLOCK_M})"
 
-    # Scaling factor as used in PyTorch's MultiheadAttention
     scale = 1.0 / math.sqrt(headdim)
+    q = q * scale  # Apply scaling to queries
 
-    # Calculate the number of full blocks and check for remainder
-    num_full_blocks = seqlen // BLOCK_M
-    remainder = seqlen % BLOCK_M
-    print(f"Number of full blocks: {num_full_blocks}, Remainder: {remainder}")
+    # Reshape to merge batch and head dimensions for vectorized operations
+    q = q.reshape(-1, seqlen, headdim)         # Shape: (bs * head, seqlen, headdim)
+    k = k.reshape(-1, seqlen, headdim)
+    v = v.reshape(-1, seqlen, headdim)
 
-    # Split Q, K, V into full blocks
-    Q_FULL_BLOCKS = mx.split(q[:, :, :num_full_blocks * BLOCK_M, :], num_full_blocks, axis=-2)
-    K_FULL_BLOCKS = mx.split(k[:, :, :num_full_blocks * BLOCK_M, :], num_full_blocks, axis=-2)
-    V_FULL_BLOCKS = mx.split(v[:, :, :num_full_blocks * BLOCK_M, :], num_full_blocks, axis=-2)
+    num_blocks = seqlen // BLOCK_M
 
-    for j in range(num_full_blocks):
-        qi = Q_FULL_BLOCKS[j] * scale  # Apply scaling to queries
-        old_o = output_buffer[..., j * BLOCK_M : (j + 1) * BLOCK_M, :]
+    # Split q, k, v into blocks
+    q_blocks = q.reshape(-1, num_blocks, BLOCK_M, headdim)
+    k_blocks = k.reshape(-1, num_blocks, BLOCK_M, headdim)
+    v_blocks = v.reshape(-1, num_blocks, BLOCK_M, headdim)
 
-        # Initialize denominator and maximum buffers in HBM.
-        old_d = mx.zeros((bs, head, BLOCK_M, 1))
-        old_m = mx.full((bs, head, BLOCK_M, 1), -mx.inf)
+    # Initialize output buffer
+    output_buffer = mx.zeros_like(q)
 
-        for i in range(num_full_blocks):
-            kj = K_FULL_BLOCKS[i]
-            vj = V_FULL_BLOCKS[i]
+    for block_idx in range(num_blocks):  # Loop over query blocks
+        qi = q_blocks[:, block_idx, :, :]  # Shape: (bs * head, BLOCK_M, headdim)
 
-            # Compute QK^T and apply softmax.
-            x_qkt = mx.softmax(mx.matmul(qi, kj.transpose(0, 1, 3, 2)), axis=-1)
+        # Initialize accumulators for numerator (numer), denominator (denom), and max score (max_score)
+        numer = mx.zeros((qi.shape[0], BLOCK_M, headdim))
+        denom = mx.zeros((qi.shape[0], BLOCK_M, 1))
+        max_score = mx.full((qi.shape[0], BLOCK_M, 1), -mx.inf)
 
-            # Compute the maximum for numerical stability.
-            local_m = mx.max(x_qkt, axis=-1, keepdims=True)
+        for s in range(num_blocks):  # Loop over key/value blocks
+            kj = k_blocks[:, s, :, :]  # Shape: (bs * head, BLOCK_M, headdim)
+            vj = v_blocks[:, s, :, :]  # Shape: (bs * head, BLOCK_M, headdim)
 
-            # Update the global maximum.
-            new_m = mx.maximum(old_m, local_m)
+            # Compute attention scores
+            scores = mx.matmul(qi, kj.transpose(0, 2, 1), stream=mx.gpu)  # Shape: (bs * head, BLOCK_M, BLOCK_M)
 
-            # Compute the exponentials safely.
-            safe_e = mx.exp(x_qkt - new_m)
+            # Update max_score for numerical stability
+            new_max_score = mx.maximum(mx.max(scores, axis=-1, keepdims=True, stream=mx.gpu), max_score, stream=mx.gpu)
 
-            # Update the denominator.
-            curr_d = mx.sum(safe_e, axis=-1, keepdims=True)
-            new_d = old_d * mx.exp(old_m - new_m) + curr_d
+            # Compute exp(scores - new_max_score)
+            exp_scores = mx.exp(scores - new_max_score, stream=mx.gpu)
 
-            # Accumulate the output.
-            new_o = old_o * mx.exp(old_m - new_m) + mx.matmul(safe_e, vj)
+            # Update numerator and denominator with scaling for numerical stability
+            numer = numer * mx.exp(max_score - new_max_score, stream=mx.gpu) + mx.matmul(exp_scores, vj, stream=mx.gpu)
+            denom = denom * mx.exp(max_score - new_max_score, stream=mx.gpu) + mx.sum(exp_scores, axis=-1, keepdims=True, stream=mx.gpu)
 
-            # Update buffers for the next iteration.
-            old_m = new_m
-            old_d = new_d
-            old_o = new_o
+            # Update max_score
+            max_score = new_max_score
 
-        # Normalize and store the output.
-        output_buffer[..., j * BLOCK_M : (j + 1) * BLOCK_M, :] = old_o / old_d
+        # Compute output for the current query block
+        output = numer / denom  # Shape: (bs * head, BLOCK_M, headdim)
 
-    # Handle the remainder block if exists
-    if remainder > 0:
-        qi = q[:, :, num_full_blocks * BLOCK_M :, :] * scale
-        old_o = output_buffer[..., num_full_blocks * BLOCK_M :, :]
+        # Store output
+        output_buffer[:, block_idx * BLOCK_M : (block_idx + 1) * BLOCK_M, :] = output
 
-        # Initialize denominator and maximum buffers in HBM.
-        old_d = mx.zeros((bs, head, remainder, 1))
-        old_m = mx.full((bs, head, remainder, 1), -mx.inf)
-
-        for i in range(num_full_blocks):
-            kj = K_FULL_BLOCKS[i]
-            vj = V_FULL_BLOCKS[i]
-
-            # Compute QK^T and apply softmax.
-            x_qkt = mx.softmax(mx.matmul(qi, kj.transpose(0, 1, 3, 2)), axis=-1)
-
-            # Compute the maximum for numerical stability.
-            local_m = mx.max(x_qkt, axis=-1, keepdims=True)
-
-            # Update the global maximum.
-            new_m = mx.maximum(old_m, local_m)
-
-            # Compute the exponentials safely.
-            safe_e = mx.exp(x_qkt - new_m)
-
-            # Update the denominator.
-            curr_d = mx.sum(safe_e, axis=-1, keepdims=True)
-            new_d = old_d * mx.exp(old_m - new_m) + curr_d
-
-            # Accumulate the output.
-            new_o = old_o * mx.exp(old_m - new_m) + mx.matmul(safe_e, vj)
-
-            # Update buffers for the next iteration.
-            old_m = new_m
-            old_d = new_d
-            old_o = new_o
-
-        # Normalize and store the output.
-        output_buffer[..., num_full_blocks * BLOCK_M :, :] = old_o / old_d
+    # Reshape output buffer back to original dimensions
+    output_buffer = output_buffer.reshape(bs, head, seqlen, headdim)
 
     return output_buffer
 
@@ -114,6 +74,5 @@ def flash_attn(q: mx.array, k: mx.array, v: mx.array, BLOCK_M: int = 128) -> mx.
     Memory-efficient flash attention implementation.
     """
     _, _, seqlen, _ = q.shape
-    if seqlen < BLOCK_M:
-        raise ValueError(f"Sequence length ({seqlen}) must be at least BLOCK_M ({BLOCK_M})")
-    return flash_attn_v2_multihead(q, k, v, BLOCK_M=BLOCK_M)
+    assert seqlen % BLOCK_M == 0, f"Sequence length ({seqlen}) must be divisible by BLOCK_M ({BLOCK_M})"
+    return flash_attn_v2_multihead_optimized(q, k, v, BLOCK_M=BLOCK_M)
