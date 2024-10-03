@@ -95,6 +95,7 @@ class TestMatmulKernel(unittest.TestCase):
             mx.eval(custom_result)
 
         # benchmark for mlx built in matmul() function
+        @mx.compile
         def benchmark_mlx():
             mlx_result = mx.matmul(a, b, stream=mx.gpu)
             mx.eval(mlx_result)
