@@ -5,7 +5,6 @@ import glob
 
 from dataclasses import dataclass
 from typing import List, Tuple, Any
-from collections import Counter
 
 import mlx.core as mx
 
@@ -67,8 +66,8 @@ class MetalKernel:
 class MetalProblem:
     name: str
     fn: Any
-    inputs: List[mx.array]
-    output_shapes: Tuple[int, int]
+    inputs: List[Any]
+    output_shapes: Tuple[Any, Any]
     grid: Tuple[int, int, int] = (1,1,1)
     threadgroup: Tuple[int, int, int] = (1,1,1)
     spec: Any = None
@@ -90,32 +89,6 @@ class MetalProblem:
 
         return outputs[0]
     
-    def score(self, results):
-        total = 0
-        full = Counter()
-        for pos, (tt, a, c, out) in results[Coord(0, 0)].items():
-            total += 1
-            count = Counter()
-            for out, tab in [(False, c2.refs[i]) for i in range(1, c.rounds()) for c2 in c.caches] + [(True, out)]:
-                for inc in tab.incoming:
-                    if out:
-                        count["out_writes"] += 1
-                    else:
-                        count["shared_writes"] += 1
-                    for ins in inc[1].inputs:
-                        if ins.location[0].startswith("S"):
-                            count["shared_reads"] += 1
-                        else:
-                            count["in_reads"] += 1
-            for k in count:
-                if count[k] > full[k]:
-                    full[k] = count[k]
-        print(f"""# {self.name}
- 
-   Score (Max Per Thread):
-   | {'Global Reads':>13} | {'Global Writes':>13} | {'Shared Reads' :>13} | {'Shared Writes' :>13} |
-   | {full['in_reads']:>13} | {full['out_writes']:>13} | {full['shared_reads']:>13} | {full['shared_writes']:>13} | 
-        """) 
 
     def run_python(self):
         if self.threadgroup[0] == 1 and self.threadgroup[1] == 1:
@@ -132,9 +105,20 @@ class MetalProblem:
         for i in range(len(self.inputs)):
             curr = self.inputs[i]
             name = self.metalKernel.input_names[i]
-            inputs[name + "_shape"] = curr.shape
-            inputs[name + "_ndim"] = curr.ndim
-            inputs[name + "_strides"] = mx.array([curr.shape[0], 1])
+
+            # Check if 'curr' has a 'shape' attribute
+            if hasattr(curr, 'shape') and hasattr(curr, 'ndim'):
+                inputs[name + "_shape"] = curr.shape
+                inputs[name + "_ndim"] = curr.ndim
+                if hasattr(curr, 'shape') and len(curr.shape) > 0:
+                    inputs[name + "_strides"] = mx.array([curr.shape[0], 1])
+                else:
+                    inputs[name + "_strides"] = mx.array([1, 1])  # Default stride for scalar or empty array
+            else:
+                # Handle scalar inputs
+                inputs[name + "_shape"] = ()
+                inputs[name + "_ndim"] = 0
+                inputs[name + "_strides"] = mx.array([])
 
         globals().update(inputs)
 
@@ -159,8 +143,7 @@ class MetalProblem:
         return results
 
     def show(self):
-        results = self.run_python()
-        self.score(results)
+        self.run_python()
 
     def check(self):
         try:
@@ -332,9 +315,9 @@ class Table:
     def __init__(self, name, array):
         self.name = name
         self.incoming = []
-        self.array = array
+        self.array = mx.array(array)
 
-        self.size = array.shape
+        self.size = mx.array(array).shape
     
     def __getitem__(self, index):
         if isinstance(index, int):
