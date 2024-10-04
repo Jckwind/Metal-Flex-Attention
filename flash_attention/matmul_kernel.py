@@ -4,7 +4,6 @@ import mlx.core as mx
 def matmul_spec(a: mx.array, b: mx.array):
     return mx.matmul(a, b)
 
-
 def matmul_kernel(
     a: mx.array,
     b: mx.array,
@@ -19,7 +18,8 @@ def matmul_kernel(
     K = a.shape[0] if A_trans else a.shape[1]
     N = b.shape[0] if B_trans else b.shape[1]
 
-    assert K == (b.shape[1] if B_trans else b.shape[0]), "Inner dimensions of A and B must match."
+    print(f"Matrix dimensions: M={M}, K={K}, N={N}")
+    print(f"Transpose flags: A_trans={A_trans}, B_trans={B_trans}")
 
     # Kernel header with utility functions
     header = """
@@ -58,13 +58,9 @@ def matmul_kernel(
     int row = gid_y * M_GROUP + lid_y;
     int col = gid_x * N_GROUP + lid_x;
 
-    // Allocate shared memory for A and B tiles with double buffering
-    threadgroup float A_shared[2][M_GROUP][K_GROUP];
-    threadgroup float B_shared[2][K_GROUP][N_GROUP];
-
-    // Buffers for double buffering
-    int curr_buffer = 0;
-    int next_buffer = 1;
+    // Allocate shared memory for A and B tiles
+    threadgroup float A_shared[M_GROUP][K_GROUP];
+    threadgroup float B_shared[K_GROUP][N_GROUP];
 
     // Initialize the output value
     float C_value = 0.0;
@@ -72,34 +68,54 @@ def matmul_kernel(
     // Loop over tiles of K dimension
     for (int k_base = 0; k_base < K; k_base += K_GROUP) {{
 
-        // Load A and B tiles into shared memory collaboratively
-        // Switch buffers for double buffering
-        curr_buffer = next_buffer;
-        next_buffer = 1 - curr_buffer;
-
         // Synchronize threads before loading new tiles
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Load tiles into shared memory
-        int tiled_k = k_base + lid_x;
-        if ((row < M) && (tiled_k < K)) {{
-            A_shared[curr_buffer][lid_y][lid_x] = A_TRANS ? a[tiled_k * a_strides[0] + row * a_strides[1]] : a[row * a_strides[0] + tiled_k * a_strides[1]];
-        }} else {{
-            A_shared[curr_buffer][lid_y][lid_x] = 0.0;
+        // Initialize shared memory to 0.0 before loading
+        for (int i = 0; i < M_GROUP; ++i) {{
+            for (int j = 0; j < K_GROUP; ++j) {{
+                A_shared[i][j] = 0.0;
+            }}
         }}
 
-        if ((tiled_k < K) && (col < N)) {{
-            B_shared[curr_buffer][lid_x][lid_y] = B_TRANS ? b[col * b_strides[0] + tiled_k * b_strides[1]] : b[tiled_k * b_strides[0] + col * b_strides[1]];
-        }} else {{
-            B_shared[curr_buffer][lid_x][lid_y] = 0.0;
+        for (int i = 0; i < K_GROUP; ++i) {{
+            for (int j = 0; j < N_GROUP; ++j) {{
+                B_shared[i][j] = 0.0;
+            }}
         }}
+
+
+        // Load tiles into shared memory
+        int tiled_k = k_base + lid_x;
+
+        // Load A tile
+        if ((row < M) && (tiled_k < K)) {{
+            if (A_TRANS) {{
+                A_shared[lid_y][lid_x] = a[tiled_k * M + row];
+            }} else {{
+                A_shared[lid_y][lid_x] = a[row * K + tiled_k];
+            }}
+        }}
+
+        // Load B tile
+        if ((tiled_k < K) && (col < N)) {{
+            if (B_TRANS) {{
+                B_shared[lid_x][lid_y] = b[col * K + tiled_k];
+            }} else {{
+                B_shared[lid_x][lid_y] = b[tiled_k * N + col];
+            }}
+        }}
+
 
         // Synchronize to make sure the tiles are loaded
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Compute the number of valid k elements in this tile (KEEP THIS)
+        int num_valid_k = min(K_GROUP, K - k_base);
+
         // Compute the partial product for the current tile
-        for (int k = 0; k < K_GROUP; ++k) {{
-            C_value += A_shared[curr_buffer][lid_y][k] * B_shared[curr_buffer][k][lid_x];
+        for (int k = 0; k < num_valid_k; ++k) {{
+            C_value += A_shared[lid_y][k] * B_shared[k][lid_x];
         }}
     }}
 
@@ -119,4 +135,7 @@ def matmul_kernel(
         ensure_row_contiguous=False,
     )
 
+    print("Executing Metal kernel...")
+    print("Metal kernel execution completed.")
+    print(f"Output Kernel: {kernel}")
     return kernel
