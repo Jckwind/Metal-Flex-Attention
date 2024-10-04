@@ -44,6 +44,10 @@ def matmul_kernel(
     constexpr int N = {N};
     constexpr int K = {K};
 
+    // Transpose flags
+    constexpr bool A_TRANS = {str(A_trans).lower()};
+    constexpr bool B_TRANS = {str(B_trans).lower()};
+
     // Thread and threadgroup indices
     int gid_x = thread_position_in_grid.x;
     int gid_y = thread_position_in_grid.y;
@@ -79,13 +83,13 @@ def matmul_kernel(
         // Load tiles into shared memory
         int tiled_k = k_base + lid_x;
         if ((row < M) && (tiled_k < K)) {{
-            A_shared[curr_buffer][lid_y][lid_x] = A_trans ? a[tiled_k * a.strides[0] + row * a.strides[1]] : a[row * a.strides[0] + tiled_k * a.strides[1]];
+            A_shared[curr_buffer][lid_y][lid_x] = A_TRANS ? a[tiled_k * a_strides[0] + row * a_strides[1]] : a[row * a_strides[0] + tiled_k * a_strides[1]];
         }} else {{
             A_shared[curr_buffer][lid_y][lid_x] = 0.0;
         }}
 
         if ((tiled_k < K) && (col < N)) {{
-            B_shared[curr_buffer][lid_x][lid_y] = B_trans ? b[col * b.strides[0] + tiled_k * b.strides[1]] : b[tiled_k * b.strides[0] + col * b.strides[1]];
+            B_shared[curr_buffer][lid_x][lid_y] = B_TRANS ? b[col * b_strides[0] + tiled_k * b_strides[1]] : b[tiled_k * b_strides[0] + col * b_strides[1]];
         }} else {{
             B_shared[curr_buffer][lid_x][lid_y] = 0.0;
         }}

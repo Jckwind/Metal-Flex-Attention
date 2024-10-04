@@ -10,7 +10,7 @@ import mlx.core as mx
 
 def remove_gputrace_file():
     gputrace_files = glob.glob("custom_kernel_*.gputrace")
-    
+
     if not gputrace_files:
         print("No .gputrace files found to remove.")
         return
@@ -88,7 +88,7 @@ class MetalProblem:
         )
 
         return outputs[0]
-    
+
 
     def run_python(self):
         if self.threadgroup[0] == 1 and self.threadgroup[1] == 1:
@@ -151,22 +151,23 @@ class MetalProblem:
 
             if os.getenv("MTL_CAPTURE_ENABLED") == '1':
                 mx.eval(*self.inputs)
-                
+
                 # Only remove existing .gputrace files if they exist
                 if glob.glob("custom_kernel_*.gputrace"):
                     remove_gputrace_file()
-                
+
                 traceName = f"custom_kernel_{self.metalKernel.name}.gputrace"
                 mx.metal.start_capture(traceName)
-                for _ in range(2): mx.eval(self.run_metal())
+                for _ in range(2):
+                    mx.eval(self.run_metal())
                 mx.metal.stop_capture()
 
             x = self.run_metal()
             y = self.spec(*self.inputs)
 
-            if mx.allclose(x, y): 
+            if mx.allclose(x, y):
                 print("Passed Tests!")
-                return 
+                return
 
             print("Failed Tests.")
             print("Yours:", x)
@@ -190,10 +191,11 @@ def convert_source_to_py(source):
             pass
         elif line.count("{") > 0:
             indent_level += 1
-            if line == "{": continue
+            if line == "{":
+                continue
         elif line.count("}") > 0:
             indent_level -= 1
-            if line == "}": 
+            if line == "}":
                 if incr_stack:
                     incr_indent_level, incr_line = incr_stack[-1]
                     if incr_indent_level == indent_level + 1:
@@ -267,8 +269,8 @@ def preprocess_source(source):
     ]
     for old, new in replacements:
         source = re.sub(old, new, source)
-    
-    return source 
+
+    return source
 
 
 @dataclass
@@ -287,7 +289,7 @@ class ScalarHistory:
         if isinstance(b, ScalarHistory):
             return ScalarHistory(self.last_fn, self.inputs + b.inputs)
         return NotImplemented
-        
+
 class Scalar:
     def __init__(self, location):
         self.location = location
@@ -301,7 +303,7 @@ class Scalar:
 
     def __radd__(self, b):
         return self + b
-        
+
     def __add__(self, b):
         if isinstance(b, (float, int)):
             return ScalarHistory("id", [self])
@@ -310,7 +312,7 @@ class Scalar:
         if isinstance(b, ScalarHistory):
             return ScalarHistory("+", [self] + b.inputs)
         return NotImplemented
-    
+
 class Table:
     def __init__(self, name, array):
         self.name = name
@@ -318,7 +320,7 @@ class Table:
         self.array = mx.array(array)
 
         self.size = mx.array(array).shape
-    
+
     def __getitem__(self, index):
         if isinstance(index, int):
             index = (index // self.size[1], index % self.size[1]) if len(self.size) == 2 else (index,)
@@ -359,7 +361,7 @@ class Coord:
 class RefList:
     def __init__(self):
         self.refs = []
-        
+
     def __getitem__(self, index):
         return self.refs[-1][index]
 
@@ -392,7 +394,7 @@ class Metal:
     threadgroupMemory: ThreadgroupMemory
 
     def __init__(
-        self, 
+        self,
         threadgroup_position_in_grid,
         threads_per_threadgroup,
         thread_position_in_threadgroup,
