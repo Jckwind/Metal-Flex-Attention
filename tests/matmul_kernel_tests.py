@@ -2,23 +2,20 @@ import unittest
 import mlx.core as mx
 import time
 import os
-import glob
-import shutil
 from flash_attention.matmul_kernel import matmul_kernel, matmul_spec
 
 
-# Utility classes and functions integrated from kernel_utils.py
 class MetalKernelTest:
-
     def __init__(
         self,
         name,
         fn,
         inputs,
         output_shape,
-        grid=(1, 1, 1),
-        threadgroup=(1, 1, 1),
+        grid,
+        threadgroup,
         spec=None,
+        **kernel_kwargs,
     ):
         self.name = name
         self.fn = fn
@@ -27,9 +24,11 @@ class MetalKernelTest:
         self.grid = grid
         self.threadgroup = threadgroup
         self.spec = spec
+        self.kernel_kwargs = kernel_kwargs
 
     def run_metal(self):
-        outputs = self.fn(*self.inputs)(
+        kernel = self.fn(*self.inputs, **self.kernel_kwargs)
+        outputs = kernel(
             inputs=self.inputs,
             grid=self.grid,
             threadgroup=self.threadgroup,
@@ -37,7 +36,6 @@ class MetalKernelTest:
             output_dtypes=[mx.float32],
             stream=mx.gpu,
             verbose=os.getenv("VERBOSE") == "1",
-            init_value=0,
         )
         return outputs[0]
 
@@ -61,110 +59,119 @@ class MetalKernelTest:
         self.check()
 
 
-def remove_gputrace_file():
-    gputrace_files = glob.glob("custom_kernel_*.gputrace")
-    if not gputrace_files:
-        return
-    for gputrace_file in gputrace_files:
-        try:
-            if os.path.isdir(gputrace_file):
-                shutil.rmtree(gputrace_file)
-            else:
-                os.remove(gputrace_file)
-        except Exception as e:
-            print(f"Error removing {gputrace_file}: {e}")
-
-
 class TestMatmulKernel(unittest.TestCase):
     def test_matmul_simple(self):
-        SIZE = 2
+        SIZE = 8
+        M_group = 8
+        N_group = 8
+        K_group = 8
+
         a = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE))
         b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
         output_shape = (SIZE, SIZE)
+
+        grid = (SIZE // N_group, SIZE // M_group, 1)
+        threadgroup = (N_group, M_group, 1)
 
         problem = MetalKernelTest(
             "Matrix Multiplication (Simple)",
             matmul_kernel,
             [a, b],
             output_shape,
-            grid=(1, 1, 1),
-            threadgroup=(1, 1, 1),
+            grid=grid,
+            threadgroup=threadgroup,
+            spec=matmul_spec,
+            M_group=M_group,
+            N_group=N_group,
+            K_group=K_group,
         )
 
         self.assertTrue(problem.check())
 
-    def test_matmul_full(self):
+    def test_matmul_transposed(self):
         SIZE = 8
-        a = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE))
-        b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
-        output_shape = (SIZE, SIZE)
+        M_group = 8
+        N_group = 8
+        K_group = 8
 
-        problem = MetalKernelTest(
-            "Matrix Multiplication (Full)",
-            matmul_kernel,
-            [a, b],
-            output_shape,
-            grid=(1, 1, 1),
-            threadgroup=(1, 1, 1),
-            spec=matmul_spec,
-        )
-
-        self.assertTrue(problem.check())
-
-    def test_matmul_zero_matrix(self):
-        SIZE = 4
-        a = mx.zeros((SIZE, SIZE), dtype=mx.float32)
-        b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
-        output_shape = (SIZE, SIZE)
-
-        problem = MetalKernelTest(
-            "Matrix Multiplication (Zero Matrix)",
-            matmul_kernel,
-            [a, b],
-            output_shape,
-            grid=(1, 1, 1),
-            threadgroup=(1, 1, 1),
-            spec=matmul_spec,
-        )
-
-        self.assertTrue(problem.check())
-
-    def test_matmul_identity_matrix(self):
-        SIZE = 5
-        a = mx.eye(SIZE, dtype=mx.float32)
+        a = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
         b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE))
         output_shape = (SIZE, SIZE)
 
+        grid = (SIZE // N_group, SIZE // M_group, 1)
+        threadgroup = (N_group, M_group, 1)
+
         problem = MetalKernelTest(
-            "Matrix Multiplication (Identity Matrix)",
+            "Matrix Multiplication (Transposed A)",
             matmul_kernel,
             [a, b],
             output_shape,
-            grid=(1, 1, 1),
-            threadgroup=(1, 1, 1),
+            grid=grid,
+            threadgroup=threadgroup,
             spec=matmul_spec,
+            M_group=M_group,
+            N_group=N_group,
+            K_group=K_group,
+            A_trans=True,
+            B_trans=False,
+        )
+
+        self.assertTrue(problem.check())
+
+    def test_matmul_incompatible_sizes(self):
+        M = 17
+        K = 13
+        N = 11
+        M_group = 8
+        N_group = 8
+        K_group = 8
+
+        a = mx.random.normal(shape=(M, K), dtype=mx.float32)
+        b = mx.random.normal(shape=(K, N), dtype=mx.float32)
+        output_shape = (M, N)
+
+        grid = ((N + N_group - 1) // N_group, (M + M_group - 1) // M_group, 1)
+        threadgroup = (N_group, M_group, 1)
+
+        problem = MetalKernelTest(
+            "Matrix Multiplication (Incompatible Sizes)",
+            matmul_kernel,
+            [a, b],
+            output_shape,
+            grid=grid,
+            threadgroup=threadgroup,
+            spec=matmul_spec,
+            M_group=M_group,
+            N_group=N_group,
+            K_group=K_group,
         )
 
         self.assertTrue(problem.check())
 
     def test_benchmark_matmul(self):
         SIZE = 512
-        NUM_RUNS = 100
-        WARM_UP_RUNS = 10
+        M_group = 16
+        N_group = 16
+        K_group = 16
+        NUM_RUNS = 10
+        WARM_UP_RUNS = 2
 
-        a = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE))
-        b = mx.arange(SIZE * SIZE, dtype=mx.float32).reshape((SIZE, SIZE)).T
+        a = mx.random.normal(shape=(SIZE, SIZE), dtype=mx.float32)
+        b = mx.random.normal(shape=(SIZE, SIZE), dtype=mx.float32)
+
+        grid = (SIZE // N_group, SIZE // M_group, 1)
+        threadgroup = (N_group, M_group, 1)
 
         # Warm-up runs
         for _ in range(WARM_UP_RUNS):
-            self.run_metal_matmul(a, b)
+            self.run_metal_matmul(a, b, grid, threadgroup, M_group, N_group, K_group)
             self.run_mlx_matmul(a, b)
             mx.synchronize()
 
         # Benchmark custom implementation
         start_time = time.perf_counter()
         for _ in range(NUM_RUNS):
-            self.run_metal_matmul(a, b)
+            self.run_metal_matmul(a, b, grid, threadgroup, M_group, N_group, K_group)
         mx.synchronize()
         custom_time = (time.perf_counter() - start_time) * 1000  # ms
 
@@ -175,20 +182,22 @@ class TestMatmulKernel(unittest.TestCase):
         mx.synchronize()
         mlx_time = (time.perf_counter() - start_time) * 1000  # ms
 
-        print(f"\nCustom matmul time: {custom_time:.3f} ms")
-        print(f"MLX matmul time: {mlx_time:.3f} ms")
+        print(f"\nCustom matmul time: {custom_time / NUM_RUNS:.3f} ms per run")
+        print(f"MLX matmul time: {mlx_time / NUM_RUNS:.3f} ms per run")
         print(f"Speedup: {mlx_time / custom_time:.2f}x\n")
 
-    def run_metal_matmul(self, a, b):
+    def run_metal_matmul(self, a, b, grid, threadgroup, M_group, N_group, K_group):
         output_shape = (a.shape[0], b.shape[1])
         problem = MetalKernelTest(
             "Benchmark Metal Matmul",
             matmul_kernel,
             [a, b],
             output_shape,
-            grid=(1, 1, 1),
-            threadgroup=(1, 1, 1),
-            spec=matmul_spec,
+            grid=grid,
+            threadgroup=threadgroup,
+            M_group=M_group,
+            N_group=N_group,
+            K_group=K_group,
         )
         return problem.run_metal()
 

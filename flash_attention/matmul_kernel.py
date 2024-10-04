@@ -5,214 +5,129 @@ def matmul_spec(a: mx.array, b: mx.array):
     return mx.matmul(a, b)
 
 
-def matmul_kernel(a: mx.array, b: mx.array):
+def matmul_kernel(
+    a: mx.array,
+    b: mx.array,
+    M_group=16,
+    N_group=16,
+    K_group=16,
+    A_trans=False,
+    B_trans=False,
+):
     # Matrix dimensions
-    M = a.shape[0]
-    K = a.shape[1]
-    N = b.shape[1]
+    M = a.shape[1] if A_trans else a.shape[0]
+    K_a = a.shape[0] if A_trans else a.shape[1]
+    K_b = b.shape[1] if B_trans else b.shape[0]
+    N = b.shape[0] if B_trans else b.shape[1]
 
-    # Leading dimensions
-    A_leading_dimension = a.strides[1] // a.itemsize
-    B_leading_dimension = b.strides[1] // b.itemsize
-    C_leading_dimension = N  # Assuming row-major order
+    assert K_a == K_b, "Inner dimensions of A and B must match."
+    K = K_a  # Inner dimension
 
-    # Configuration parameters
-    load_previous_C = False
-    A_trans = False
-    B_trans = False
-    M_group = 64
-    N_group = 64
-    K_group = 64
-
-    # Define macros directly in the header
+    # Define the kernel header with transpose flags
     header_macros = f"""
-    #define M {M}
-    #define N {N}
-    #define K {K}
-
-    #define A_ld {A_leading_dimension}
-    #define B_ld {B_leading_dimension}
-    #define C_ld {C_leading_dimension}
-
-    #define load_previous_C {int(load_previous_C)}
-    #define A_trans {int(A_trans)}
-    #define B_trans {int(B_trans)}
-    #define M_group {M_group}
-    #define N_group {N_group}
-    #define K_group {K_group}
-    """
+#define A_TRANSPOSED {1 if A_trans else 0}
+#define B_TRANSPOSED {1 if B_trans else 0}
+"""
 
     header = (
         header_macros
         + """
-    #include <metal_stdlib>
-    using namespace metal;
+#include <metal_stdlib>
+using namespace metal;
 
-    template <typename T>
-    """
+// Utility function for indexing
+inline size_t get_index(
+    int row, int col,
+    constant size_t* strides
+) {
+    // Stride-based indexing
+    return row * strides[0] + col * strides[1];
+}
+"""
     )
 
     # Kernel source (function body)
-    source = """
-    [[kernel]] void matmul_kernel(
-        const device T* A [[buffer(0)]],
-        const device T* B [[buffer(1)]],
-        device T* C [[buffer(2)]],
-        uint3 gid [[threadgroup_position_in_grid]],
-        ushort threads_per_threadgroup [[threads_per_threadgroup]],
-        ushort thread_index_in_simdgroup [[thread_index_in_simdgroup]],
-        ushort simdgroup_index_in_threadgroup [[simdgroup_index_in_threadgroup]],
-        uint thread_position_in_threadgroup [[thread_position_in_threadgroup]]
-    ) {
-        // Compute edges and remainders
-        uint M_edge = M - (M % M_group);
-        uint N_edge = N - (N % N_group);
+    source = f"""
+// Define tile sizes
+constexpr int M_GROUP = {M_group};
+constexpr int N_GROUP = {N_group};
+constexpr int K_GROUP = {K_group};
 
-        ushort M_remainder = (M % 8 == 0) ? 8 : ushort(M % 8);
-        ushort N_remainder = (N % 8 == 0) ? 8 : ushort(N % 8);
-        ushort K_remainder = (K % K_group == 0) ? ushort(K_group) : ushort(K % K_group);
-        ushort K_remainder_padded = ((K_remainder + 7) / 8) * 8;
+// Matrix dimensions
+constexpr int M = {M};
+constexpr int N = {N};
+constexpr int K = {K};
 
-        ushort M_shift = (M < M_group) ? 0 : ushort(8 - M_remainder);
-        ushort N_shift = (N < N_group) ? 0 : ushort(8 - N_remainder);
+// Thread and threadgroup indices
+uint group_id_x = threadgroup_position_in_grid.x;
+uint group_id_y = threadgroup_position_in_grid.y;
+uint local_id_x = thread_position_in_threadgroup.x;
+uint local_id_y = thread_position_in_threadgroup.y;
 
-        // Thread and threadgroup indices
-        uint2 gid_xy = uint2(gid.x, gid.y);
-        ushort sidx = simdgroup_index_in_threadgroup;
-        ushort lane_id = thread_index_in_simdgroup;
-        uint threads_per_threadgroup = threads_per_threadgroup;
-        uint thread_position_in_threadgroup = thread_position_in_threadgroup;
+// Compute global row and column indices
+int row = group_id_y * M_GROUP + local_id_y;
+int col = group_id_x * N_GROUP + local_id_x;
 
-        ushort2 sid = ushort2(sidx % (N_group / 8), sidx / (N_group / 8));
-        ushort2 morton_offset = ushort2(lane_id % 8, lane_id / 8);
+// Initialize the output value
+float C_value = 0.0;
 
-        // Return early if SIMD is out of bounds
-        uint M_offset = gid_xy.y * M_group;
-        uint N_offset = gid_xy.x * N_group;
-        if (M_offset + sid.y * 8 >= M || N_offset + sid.x * 8 >= N) {
-            return;
-        }
-        ushort2 offset_in_group = ushort2(sid.x * 8 + morton_offset.x,
-                                          sid.y * 8 + morton_offset.y);
+// Allocate shared memory for A and B tiles
+threadgroup float A_shared[M_GROUP][K_GROUP];
+threadgroup float B_shared[K_GROUP][N_GROUP];
 
-        // Shift the matrix block within bounds, if possible
-        uint M_shift_local = M_shift;
-        uint N_shift_local = N_shift;
-        uint M_edge_local = M_edge;
-        uint N_edge_local = N_edge;
+// Loop over tiles of K dimension
+for (int k_base = 0; k_base < K; k_base += K_GROUP) {{
+    // Handle edge cases for K
+    int K_tile_size = min((int)K_GROUP, K - k_base);
 
-        if ((M_shift_local != 0) && (gid_xy.y * M_group >= M_edge_local)) {
-            M_offset -= M_shift_local;
-        }
-        if ((N_shift_local != 0) && (gid_xy.x * N_group >= N_edge_local)) {
-            N_offset -= N_shift_local;
-        }
+    // Load A into shared memory
+    int a_row = A_TRANSPOSED ? k_base + local_id_x : row;
+    int a_col = A_TRANSPOSED ? row : k_base + local_id_x;
 
-        // Initialize accumulator
-        thread simdgroup_matrix<T, 8, 8> C_sram;
+    float a_val = 0.0;
+    if (a_row < A_shape[0] && a_col < A_shape[1]) {{
+        size_t idx = get_index(a_row, a_col, A_strides);
+        a_val = A[idx];
+    }}
+    A_shared[local_id_y][local_id_x] = a_val;
 
-        if (load_previous_C) {
-            // Load previous C values
-            uint2 C_offset = uint2(N_offset + offset_in_group.x,
-                                   M_offset + offset_in_group.y);
-            device T* C_dst = C + C_offset.y * C_ld + C_offset.x;
-            // Initialize C_sram
-            C_sram = simdgroup_matrix<T, 8, 8>((T)0);
-            if (C_offset.x < N && C_offset.y < M) {
-                C_sram.load(C_dst, C_ld);
-            }
-        } else {
-            // Initialize C_sram to zero
-            C_sram = simdgroup_matrix<T, 8, 8>((T)0);
-        }
+    // Load B into shared memory
+    int b_row = B_TRANSPOSED ? col : k_base + local_id_y;
+    int b_col = B_TRANSPOSED ? k_base + local_id_y : col;
 
-        // Main loop over K dimension with asynchronous copy
-        for (uint k_base = 0; k_base < K; k_base += K_group) {
-            // Declare threadgroup memory for A and B blocks
-            threadgroup T* A_block = (threadgroup T*) &A_block_raw[0];
-            threadgroup T* B_block = (threadgroup T*) &B_block_raw[0];
+    float b_val = 0.0;
+    if (b_row < B_shape[0] && b_col < B_shape[1]) {{
+        size_t idx = get_index(b_row, b_col, B_strides);
+        b_val = B[idx];
+    }}
+    B_shared[local_id_y][local_id_x] = b_val;
 
-            // Allocate raw storage
-            threadgroup char A_block_raw[M_group * K_group * sizeof(T)];
-            threadgroup char B_block_raw[K_group * N_group * sizeof(T)];
+    // Synchronize to make sure the tiles are loaded
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            // Asynchronous copy of A and B into shared memory
-            uint thread_id = thread_position_in_threadgroup;
-            uint total_threads = threads_per_threadgroup;
+    // Compute the dot product for the current tile
+    for (int k = 0; k < K_tile_size; ++k) {{
+        C_value += A_shared[local_id_y][k] * B_shared[k][local_id_x];
+    }}
 
-            // Copy A into A_block
-            for (uint idx = thread_id; idx < M_group * K_group; idx += total_threads) {
-                uint m = idx / K_group;
-                uint k = idx % K_group;
-                uint global_m = M_offset + m;
-                uint global_k = k_base + k;
-                if (global_m < M && global_k < K) {
-                    if (A_trans) {
-                        A_block[idx] = A[global_k * A_ld + global_m];
-                    } else {
-                        A_block[idx] = A[global_m * A_ld + global_k];
-                    }
-                } else {
-                    A_block[idx] = (T)0;
-                }
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Synchronize before loading the next tile
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}}
 
-            // Copy B into B_block
-            for (uint idx = thread_id; idx < K_group * N_group; idx += total_threads) {
-                uint k = idx / N_group;
-                uint n = idx % N_group;
-                uint global_k = k_base + k;
-                uint global_n = N_offset + n;
-                if (global_k < K && global_n < N) {
-                    if (B_trans) {
-                        B_block[idx] = B[global_n * B_ld + global_k];
-                    } else {
-                        B_block[idx] = B[global_k * B_ld + global_n];
-                    }
-                } else {
-                    B_block[idx] = (T)0;
-                }
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+// Write the result back to global memory
+if (row < M && col < N) {{
+    size_t idx = row * N + col;
+    C[idx] = C_value;
+}}
+"""
 
-            // Perform multiplication and accumulation
-            for (ushort kk = 0; kk < K_group; kk += 8) {
-                // Load A and B into simdgroup_matrix
-                thread simdgroup_matrix<T, 8, 8> A_sram;
-                thread simdgroup_matrix<T, 8, 8> B_sram;
-
-                uint A_index = (offset_in_group.y) * K_group + kk;
-                uint B_index = kk * N_group + offset_in_group.x;
-
-                A_sram.load(&A_block[A_index], K_group);
-                B_sram.load(&B_block[B_index], N_group);
-
-                // Multiply and accumulate
-                C_sram.multiply_add(A_sram, B_sram);
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-        }
-
-        // Store the result back to global memory
-        uint2 C_offset = uint2(N_offset + offset_in_group.x,
-                               M_offset + offset_in_group.y);
-        device T* C_dst = C + C_offset.y * C_ld + C_offset.x;
-
-        if (C_offset.x < N && C_offset.y < M) {
-            C_sram.store(C_dst, C_ld);
-        }
-    }
-    """
-
-    # Now define the kernel
     kernel = mx.fast.metal_kernel(
         name="matmul_kernel",
         input_names=["A", "B"],
         output_names=["C"],
         source=source,
         header=header,
-        ensure_row_contiguous=True,
+        ensure_row_contiguous=False,
     )
 
     return kernel
