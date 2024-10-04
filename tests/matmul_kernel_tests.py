@@ -19,7 +19,6 @@ class Timing(contextlib.ContextDecorator):
                 + (self.on_exit(self.et) if self.on_exit else "")
             )
 
-
 class MetalKernelTest:
     def __init__(
         self,
@@ -113,6 +112,8 @@ class TestMatmulKernel(unittest.TestCase):
             M_group=M_group,
             N_group=N_group,
             K_group=K_group,
+            A_trans=False,
+            B_trans=False,
         )
 
         self.assertTrue(problem.check())
@@ -171,6 +172,8 @@ class TestMatmulKernel(unittest.TestCase):
             M_group=M_group,
             N_group=N_group,
             K_group=K_group,
+            A_trans=False,
+            B_trans=False,
         )
 
         self.assertTrue(problem.check())
@@ -221,6 +224,8 @@ class TestMatmulKernel(unittest.TestCase):
             M_group=M_group,
             N_group=N_group,
             K_group=K_group,
+            A_trans=False,
+            B_trans=False,
         )
         result = problem.run_metal()
         return result

@@ -57,6 +57,8 @@ def matmul_kernel(
     N_group=16,
     K_group=16,
     K_tile=8,
+    A_trans=bool,
+    B_trans=bool,
 ):
     # Matrix dimensions
     M = a.shape[0]
@@ -71,13 +73,19 @@ def matmul_kernel(
     using namespace metal;
     """
 
-    # Modified kernel source
+    # Convert booleans to 'true' or 'false' strings
+    A_trans_str = 'true' if A_trans else 'false'
+    B_trans_str = 'true' if B_trans else 'false'
+
+    # Updated shared memory loading logic to handle non-transposed matrices
     source = f"""
     // Define tile sizes and matrix dimensions
     constexpr int M_GROUP = {M_group};
     constexpr int N_GROUP = {N_group};
     constexpr int K_GROUP = {K_group};
     constexpr int K_TILE  = {K_tile};
+    constexpr bool A_TRANS = {A_trans_str};
+    constexpr bool B_TRANS = {B_trans_str};
 
     constexpr int M = {M};
     constexpr int N = {N};
@@ -111,14 +119,22 @@ def matmul_kernel(
             // Load A_tile
             int k = k_base + k_offset + lid_x;
             if (global_row < M && k < K) {{
-                A_shared[next_buffer][lid_y][lid_x] = a[global_row * K + k];
+                if (A_TRANS) {{
+                    A_shared[next_buffer][lid_y][lid_x] = a[k * M + global_row];
+                }} else {{
+                    A_shared[next_buffer][lid_y][lid_x] = a[global_row * K + k];
+                }}
             }} else {{
                 A_shared[next_buffer][lid_y][lid_x] = 0.0;
             }}
 
             // Load B_tile
             if (k < K && global_col < N) {{
-                B_shared[next_buffer][lid_x][lid_y] = b[k * N + global_col];
+                if (B_TRANS) {{
+                    B_shared[next_buffer][lid_x][lid_y] = b[global_col * K + k];
+                }} else {{
+                    B_shared[next_buffer][lid_x][lid_y] = b[k * N + global_col];
+                }}
             }} else {{
                 B_shared[next_buffer][lid_x][lid_y] = 0.0;
             }}
