@@ -59,3 +59,15 @@ Inspiration from SageAttention:
     Analyze SageAttention's Triton implementation for algorithm structure and data flow ideas, but translate those ideas into Metal and MLX.
 
 By systematically following this plan, leveraging your existing work, and incorporating insights from research, you are on track to develop a high-performance and flexible FlexAttention implementation in MLX. Remember to prioritize thorough testing and profiling at each stage.
+
+
+### Current State
+
+The current focus is on porting an open-source Swift implementation of Metal FlashAttention to MLX Python kernels. This involves translating the core logic of the Swift-based Metal kernels into Python, while leveraging the MLX framework for GPU acceleration. The Swift implementation, which is highly optimized for Apple's Metal API, serves as a reference for the structure and performance characteristics we aim to achieve in the MLX environment.
+
+Key components being ported include:
+- **Matrix Multiplication (matmul_kernel)**: The tiled matrix multiplication kernel, originally written in Swift for Metal, is being adapted to MLX. This includes handling transpositions, optimizing memory access patterns, and ensuring efficient use of GPU resources.
+
+The goal is to maintain the performance benefits of the original Metal implementation while making the code more accessible and flexible through Python and MLX. This porting process also opens up opportunities for further optimizations specific to MLX and Python's dynamic nature.
+
+The next steps involve completing the port of the remaining kernels, integrating them into a cohesive pipeline, and thoroughly testing the performance against the original Swift implementation.
