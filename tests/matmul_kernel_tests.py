@@ -14,9 +14,9 @@ class TestMatmulKernel(unittest.TestCase):
         problem = MetalProblem(
             "Matrix Multiplication (Simple)",
             matmul_kernel,
-            [a, b], 
+            [a, b],
             output_shape,
-            grid=(3,3,1), 
+            grid=(3,3,1),
             threadgroup=(3,3,1),
             spec=matmul_spec
         )
@@ -33,13 +33,13 @@ class TestMatmulKernel(unittest.TestCase):
         problem = MetalProblem(
             "Matrix Multiplication (Full)",
             matmul_kernel,
-            [a, b], 
+            [a, b],
             output_shape,
-            grid=(9,9,1), 
+            grid=(9,9,1),
             threadgroup=(3,3,1),
             spec=matmul_spec
         )
-        
+
         problem.show()
         self.assertFalse(problem.check(), "Full matmul test passed")
 
