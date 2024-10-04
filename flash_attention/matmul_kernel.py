@@ -40,8 +40,8 @@ from typing import Callable
 #   outputs = kernel(
 #       inputs=[a, b],
 #       template=[("T", mx.float32)],
-#       grid=(M, N, 1),
-#       threadgroup=(BLOCK_SIZE, BLOCK_SIZE, 1),
+#       grid=(grid_x, grid_y, 1),
+#       threadgroup=(threadgroup_x, threadgroup_y, 1),
 #       output_shapes=[(M, N)],
 #       output_dtypes=[mx.float32]
 #   )
@@ -57,13 +57,11 @@ def matmul_kernel(
     N_group=16,
     K_group=16,
     K_tile=8,
-    A_trans=bool,
-    B_trans=bool,
 ):
     # Matrix dimensions
     M = a.shape[0]
-    N = b.shape[1]
     K = a.shape[1]
+    N = b.shape[1]
 
     print(f"Matrix dimensions: M={M}, K={K}, N={N}")
 
@@ -73,16 +71,10 @@ def matmul_kernel(
     using namespace metal;
     """
 
-    # Convert booleans to 'true' or 'false' strings
-    A_trans_str = 'true' if A_trans else 'false'
-    B_trans_str = 'true' if B_trans else 'false'
-
-    # Updated shared memory loading logic to handle non-transposed matrices
+    # Modified kernel source
     source = f"""
-    // Define tile sizes and matrix dimensions
     constexpr int M_GROUP = {M_group};
     constexpr int N_GROUP = {N_group};
-    constexpr int K_GROUP = {K_group};
     constexpr int K_TILE  = {K_tile};
     constexpr bool A_TRANS = {A_trans_str};
     constexpr bool B_TRANS = {B_trans_str};
@@ -92,8 +84,8 @@ def matmul_kernel(
     constexpr int K = {K};
 
     // Thread and threadgroup indices
-    int gid_x = thread_position_in_grid.x;
-    int gid_y = thread_position_in_grid.y;
+    int gid_x = threadgroup_position_in_grid.x;
+    int gid_y = threadgroup_position_in_grid.y;
     int lid_x = thread_position_in_threadgroup.x;
     int lid_y = thread_position_in_threadgroup.y;
 
@@ -101,10 +93,12 @@ def matmul_kernel(
     int global_row = gid_y * M_GROUP + lid_y;
     int global_col = gid_x * N_GROUP + lid_x;
 
-    // Shared memory buffers with double buffering
-    threadgroup float A_shared[2][M_GROUP][K_TILE];
-    threadgroup float B_shared[2][K_TILE][N_GROUP];
-    int current_buffer = 0;
+    // Shared memory for tiles
+    threadgroup float A_shared[M_GROUP][K_TILE];
+    threadgroup float B_shared[K_TILE][N_GROUP];
+
+    // Pre-calculate number of tiles
+    int num_tiles = (K + K_TILE - 1) / K_TILE;
 
     float C_value = 0.0;
 
@@ -119,40 +113,31 @@ def matmul_kernel(
             // Load A_tile
             int k = k_base + k_offset + lid_x;
             if (global_row < M && k < K) {{
-                if (A_TRANS) {{
-                    A_shared[next_buffer][lid_y][lid_x] = a[k * M + global_row];
-                }} else {{
-                    A_shared[next_buffer][lid_y][lid_x] = a[global_row * K + k];
-                }}
+                A_shared[next_buffer][lid_y][lid_x] = a[global_row * K + k];
             }} else {{
                 A_shared[next_buffer][lid_y][lid_x] = 0.0;
             }}
 
             // Load B_tile
             if (k < K && global_col < N) {{
-                if (B_TRANS) {{
-                    B_shared[next_buffer][lid_x][lid_y] = b[global_col * K + k];
-                }} else {{
-                    B_shared[next_buffer][lid_x][lid_y] = b[k * N + global_col];
-                }}
+                B_shared[next_buffer][lid_x][lid_y] = b[k * N + global_col];
             }} else {{
                 B_shared[next_buffer][lid_x][lid_y] = 0.0;
             }}
 
-            // Synchronize after loading
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+        // Synchronize to make sure the tile is loaded
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            // Compute using current_buffer
-            for (int kk = 0; kk < K_TILE; ++kk) {{
-                C_value += A_shared[current_buffer][lid_y][kk] * B_shared[current_buffer][kk][lid_x];
-            }}
-
-            // Swap buffers
-            current_buffer = next_buffer;
+        // Compute the partial product
+        for (int k = 0; k < K_TILE; ++k) {{
+            C_value += A_shared[lid_y][k] * B_shared[k][lid_x];
         }}
+
+        // Synchronize before loading the next tile
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
-    // Write result to global memory
+    // Write the result to global memory
     if (global_row < M && global_col < N) {{
         C[global_row * N + global_col] = C_value;
     }}
@@ -167,6 +152,10 @@ def matmul_kernel(
         ensure_row_contiguous=True,
     )
 
+    # Calculate grid dimensions
+    grid_x = (N + N_group - 1) // N_group
+    grid_y = (M + M_group - 1) // M_group
+
     # Execute the kernel and return the result
     try:
         assert a.dtype == b.dtype
@@ -174,8 +163,8 @@ def matmul_kernel(
         outputs = kernel(
             inputs=[a, b],
             template=[("T", a.dtype)],
-            grid=(M, N, 1),
-            threadgroup=(M_group, N_group, 1),
+            grid=(grid_x, grid_y, 1),
+            threadgroup=(N_group, M_group, 1),
             output_shapes=[(M, N)],
             output_dtypes=[a.dtype],
         )
