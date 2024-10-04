@@ -16,114 +16,99 @@ def matmul_kernel(
 ):
     # Matrix dimensions
     M = a.shape[1] if A_trans else a.shape[0]
-    K_a = a.shape[0] if A_trans else a.shape[1]
-    K_b = b.shape[1] if B_trans else b.shape[0]
+    K = a.shape[0] if A_trans else a.shape[1]
     N = b.shape[0] if B_trans else b.shape[1]
 
-    assert K_a == K_b, "Inner dimensions of A and B must match."
-    K = K_a  # Inner dimension
+    assert K == (b.shape[1] if B_trans else b.shape[0]), "Inner dimensions of A and B must match."
 
-    # Define the kernel header with transpose flags
-    header_macros = f"""
-#define A_TRANSPOSED {1 if A_trans else 0}
-#define B_TRANSPOSED {1 if B_trans else 0}
-"""
+    # Kernel header with utility functions
+    header = """
+    #include <metal_stdlib>
+    using namespace metal;
 
-    header = (
-        header_macros
-        + """
-#include <metal_stdlib>
-using namespace metal;
+    // Ceil division utility
+    inline int ceil_div(int a, int b) {
+        return (a + b - 1) / b;
+    }
+    """
 
-// Utility function for indexing
-inline size_t get_index(
-    int row, int col,
-    constant size_t* strides
-) {
-    // Stride-based indexing
-    return row * strides[0] + col * strides[1];
-}
-"""
-    )
-
-    # Kernel source (function body)
+    # Modified kernel source
     source = f"""
-// Define tile sizes
-constexpr int M_GROUP = {M_group};
-constexpr int N_GROUP = {N_group};
-constexpr int K_GROUP = {K_group};
+    // Define tile sizes
+    constexpr int M_GROUP = {M_group};
+    constexpr int N_GROUP = {N_group};
+    constexpr int K_GROUP = {K_group};
 
-// Matrix dimensions
-constexpr int M = {M};
-constexpr int N = {N};
-constexpr int K = {K};
+    // Matrix dimensions
+    constexpr int M = {M};
+    constexpr int N = {N};
+    constexpr int K = {K};
 
-// Thread and threadgroup indices
-uint group_id_x = threadgroup_position_in_grid.x;
-uint group_id_y = threadgroup_position_in_grid.y;
-uint local_id_x = thread_position_in_threadgroup.x;
-uint local_id_y = thread_position_in_threadgroup.y;
+    // Thread and threadgroup indices
+    int gid_x = thread_position_in_grid.x;
+    int gid_y = thread_position_in_grid.y;
+    int lid_x = thread_position_in_threadgroup.x;
+    int lid_y = thread_position_in_threadgroup.y;
 
-// Compute global row and column indices
-int row = group_id_y * M_GROUP + local_id_y;
-int col = group_id_x * N_GROUP + local_id_x;
+    // Compute global row and column indices
+    int row = gid_y * M_GROUP + lid_y;
+    int col = gid_x * N_GROUP + lid_x;
 
-// Initialize the output value
-float C_value = 0.0;
+    // Allocate shared memory for A and B tiles with double buffering
+    threadgroup float A_shared[2][M_GROUP][K_GROUP];
+    threadgroup float B_shared[2][K_GROUP][N_GROUP];
 
-// Allocate shared memory for A and B tiles
-threadgroup float A_shared[M_GROUP][K_GROUP];
-threadgroup float B_shared[K_GROUP][N_GROUP];
+    // Buffers for double buffering
+    int curr_buffer = 0;
+    int next_buffer = 1;
 
-// Loop over tiles of K dimension
-for (int k_base = 0; k_base < K; k_base += K_GROUP) {{
-    // Handle edge cases for K
-    int K_tile_size = min((int)K_GROUP, K - k_base);
+    // Initialize the output value
+    float C_value = 0.0;
 
-    // Load A into shared memory
-    int a_row = A_TRANSPOSED ? k_base + local_id_x : row;
-    int a_col = A_TRANSPOSED ? row : k_base + local_id_x;
+    // Loop over tiles of K dimension
+    for (int k_base = 0; k_base < K; k_base += K_GROUP) {{
 
-    float a_val = 0.0;
-    if (a_row < A_shape[0] && a_col < A_shape[1]) {{
-        size_t idx = get_index(a_row, a_col, A_strides);
-        a_val = A[idx];
+        // Load A and B tiles into shared memory collaboratively
+        // Switch buffers for double buffering
+        curr_buffer = next_buffer;
+        next_buffer = 1 - curr_buffer;
+
+        // Synchronize threads before loading new tiles
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Load tiles into shared memory
+        int tiled_k = k_base + lid_x;
+        if ((row < M) && (tiled_k < K)) {{
+            A_shared[curr_buffer][lid_y][lid_x] = A_trans ? a[tiled_k * a.strides[0] + row * a.strides[1]] : a[row * a.strides[0] + tiled_k * a.strides[1]];
+        }} else {{
+            A_shared[curr_buffer][lid_y][lid_x] = 0.0;
+        }}
+
+        if ((tiled_k < K) && (col < N)) {{
+            B_shared[curr_buffer][lid_x][lid_y] = B_trans ? b[col * b.strides[0] + tiled_k * b.strides[1]] : b[tiled_k * b.strides[0] + col * b.strides[1]];
+        }} else {{
+            B_shared[curr_buffer][lid_x][lid_y] = 0.0;
+        }}
+
+        // Synchronize to make sure the tiles are loaded
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Compute the partial product for the current tile
+        for (int k = 0; k < K_GROUP; ++k) {{
+            C_value += A_shared[curr_buffer][lid_y][k] * B_shared[curr_buffer][k][lid_x];
+        }}
     }}
-    A_shared[local_id_y][local_id_x] = a_val;
 
-    // Load B into shared memory
-    int b_row = B_TRANSPOSED ? col : k_base + local_id_y;
-    int b_col = B_TRANSPOSED ? k_base + local_id_y : col;
-
-    float b_val = 0.0;
-    if (b_row < B_shape[0] && b_col < B_shape[1]) {{
-        size_t idx = get_index(b_row, b_col, B_strides);
-        b_val = B[idx];
+    // Write the result back to global memory
+    if ((row < M) && (col < N)) {{
+        size_t idx = row * N + col;
+        C[idx] = C_value;
     }}
-    B_shared[local_id_y][local_id_x] = b_val;
-
-    // Synchronize to make sure the tiles are loaded
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Compute the dot product for the current tile
-    for (int k = 0; k < K_tile_size; ++k) {{
-        C_value += A_shared[local_id_y][k] * B_shared[k][local_id_x];
-    }}
-
-    // Synchronize before loading the next tile
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-}}
-
-// Write the result back to global memory
-if (row < M && col < N) {{
-    size_t idx = row * N + col;
-    C[idx] = C_value;
-}}
-"""
+    """
 
     kernel = mx.fast.metal_kernel(
         name="matmul_kernel",
-        input_names=["A", "B"],
+        input_names=["a", "b"],
         output_names=["C"],
         source=source,
         header=header,

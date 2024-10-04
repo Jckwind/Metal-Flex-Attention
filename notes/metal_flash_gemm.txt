@@ -1,0 +1,2743 @@
+FlashAttention/Utilities/MTLAddressSpace.swift
+---
+//
+//  MTLAddressSpace.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 8/9/24.
+//
+
+public enum MTLAddressSpace {
+  case device
+  case threadgroup
+
+  public var keyword: String {
+    switch self {
+    case .device: return "device"
+    case .threadgroup: return "threadgroup"
+    }
+  }
+
+  public var offsetType: String {
+    switch self {
+    case .device: return "uint"
+    case .threadgroup: return "ushort"
+    }
+  }
+}
+
+
+---
+FlashAttention/Utilities/MTLContext.swift
+---
+//
+//  MTLContext.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/26/24.
+//
+
+import Metal
+
+public struct MTLContext {
+  public var device: MTLDevice
+  public var commandQueue: MTLCommandQueue
+
+  public static let global = MTLContext()
+
+  public init() {
+    device = MTLCreateSystemDefaultDevice()!
+    commandQueue = device.makeCommandQueue()!
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMHeaders.swift
+---
+//
+//  GEMMHeaders.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+/// Create the source code for the 'metal\_simdgroup\_event' header.
+///
+/// I may have found the hardware bug with async copies on M1. If you shoot
+/// off an async copy, you need to read from its contents later in the
+/// the shader. Otherwise, something inside the hardware (like a
+/// DispatchSemaphore) will be waiting indefinitely to be notified. The bug
+/// is a bit flaky, and only shows up for certain problem configurations. The
+/// side effects are catastrophic; the GPU might freeze up until the computer
+/// reboots.
+///
+/// Workaround: if an async copy from device -> threadgroup is launched,
+/// guarantee that both:
+/// - The threadgroup will enter another `threadgroup_barrier` before the end of
+///   the kernel.
+/// - The results of the async copy will be read from. This means at least one
+///   thread must dereference a pointer within the region of threadgroup memory.
+func createMetalSimdgroupEvent() -> String {
+  // Return the source string.
+  return """
+// -*- Metal -*-
+//===-- metal_simdgroup_event ---------------------------------------------===//
+// Copyright (c) 2024 Philip Turner. See MIT LICENSE
+//===----------------------------------------------------------------------===//
+
+#ifndef __METAL_SIMDGROUP_EVENT
+#define __METAL_SIMDGROUP_EVENT
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   %struct._simdgroup_event_t = type opaque
+//
+struct _simdgroup_event_t;
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   Bitcode: TBD
+//
+thread _simdgroup_event_t*
+__metal_simdgroup_async_copy_1d(
+  ulong, ulong, threadgroup void *, const device void *, ulong)
+  __asm("air.simdgroup_async_copy_1d.p3i8.p1i8");
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   Bitcode: TBD
+//
+thread _simdgroup_event_t*
+__metal_simdgroup_async_copy_1d(
+  ulong, ulong, device void *, const threadgroup void *, ulong)
+  __asm("air.simdgroup_async_copy_1d.p1i8.p3i8");
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   ; Function Attrs: argmemonly convergent nounwind
+//   declare %struct._simdgroup_event_t*
+//     @air.simdgroup_async_copy_2d.p3i8.p1i8(
+//       i64, i64,
+//       i8 addrspace(3)* nocapture writeonly, i64, i64, <2 x i64>,
+//       i8 addrspace(1)* nocapture readonly,  i64, i64, <2 x i64>,
+//       <2 x i64>, i32)
+//     local_unnamed_addr #4
+//
+thread _simdgroup_event_t*
+__metal_simdgroup_async_copy_2d(
+  ulong, ulong,
+  threadgroup void *, ulong, ulong, ulong2,
+  const device void *, ulong, ulong, ulong2,
+  long2, int)
+  __asm("air.simdgroup_async_copy_2d.p3i8.p1i8");
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   ; Function Attrs: argmemonly convergent nounwind
+//   declare %struct._simdgroup_event_t*
+//     @air.simdgroup_async_copy_2d.p1i8.p3i8(
+//       i64, i64,
+//       i8 addrspace(1)* nocapture writeonly, i64, i64, <2 x i64>,
+//       i8 addrspace(3)* nocapture readonly,  i64, i64, <2 x i64>,
+//       <2 x i64>, i32)
+//     local_unnamed_addr #4
+//
+thread _simdgroup_event_t*
+__metal_simdgroup_async_copy_2d(
+  ulong, ulong,
+  device void *, ulong, ulong, ulong2,
+  const threadgroup void *, ulong, ulong, ulong2,
+  long2, int)
+  __asm("air.simdgroup_async_copy_2d.p1i8.p3i8");
+
+// Invoking the generation of LLVM bitcode for async copies.
+//
+//   ; Function Attrs: convergent nounwind
+//   declare void
+//     @air.wait_simdgroup_events(i32, %struct._simdgroup_event_t** nocapture)
+//     local_unnamed_addr #3
+//
+void __metal_wait_simdgroup_events(
+  int, thread _simdgroup_event_t**)
+  __asm("air.wait_simdgroup_events");
+
+#pragma METAL internals : enable
+namespace metal
+{
+  enum class simdgroup_async_copy_clamp_mode {
+    clamp_to_zero = 0,
+    clamp_to_edge = 1
+  };
+
+  struct simdgroup_event {
+    METAL_FUNC simdgroup_event() thread {}
+
+    template <typename T>
+    METAL_FUNC void async_copy(
+      threadgroup T *dst,
+      const device T *src,
+      ulong n_elements
+    ) thread {
+      event = __metal_simdgroup_async_copy_1d(
+        // Description of the data type.
+        sizeof(T),
+        alignof(T),
+
+        // Description of the arguments.
+        reinterpret_cast<threadgroup void *>(dst),
+        reinterpret_cast<const device void *>(src),
+        n_elements);
+    }
+
+    template <typename T>
+    METAL_FUNC void async_copy(
+      device T *dst,
+      const threadgroup T *src,
+      ulong n_elements
+    ) thread {
+      event = __metal_simdgroup_async_copy_1d(
+        // Description of the data type.
+        sizeof(T),
+        alignof(T),
+
+        // Description of the arguments.
+        reinterpret_cast<device void *>(dst),
+        reinterpret_cast<const threadgroup void *>(src),
+        n_elements);
+    }
+
+    template <typename T>
+    METAL_FUNC void async_copy(
+      // Description of the destination.
+      threadgroup T *dst,
+      ushort dst_elements_per_row,
+      ushort2 dst_tile_dimensions,
+
+      // Description of the source.
+      const device T *src,
+      uint src_elements_per_row,
+      ushort2 src_tile_dimensions,
+
+      // Other arguments.
+      bool transpose_matrix = false,
+      simdgroup_async_copy_clamp_mode clamp_mode =
+        simdgroup_async_copy_clamp_mode::clamp_to_zero
+    ) thread {
+      if (transpose_matrix) {
+        src_tile_dimensions = src_tile_dimensions.yx;
+        dst_tile_dimensions = dst_tile_dimensions.yx;
+      }
+      event = __metal_simdgroup_async_copy_2d(
+        // Description of the data type.
+        sizeof(T),
+        alignof(T),
+
+        // Description of the destination.
+        reinterpret_cast<threadgroup void *>(dst),
+        ushort(dst_elements_per_row),
+        1,
+        ulong2(dst_tile_dimensions),
+
+        // Description of the source.
+        reinterpret_cast<const device void *>(src),
+        uint(src_elements_per_row),
+        1,
+        ulong2(src_tile_dimensions),
+
+        // Other arguments.
+        long2(0),
+        static_cast<int>(clamp_mode));
+    }
+
+    template <typename T>
+    METAL_FUNC void async_copy(
+      // Description of the destination.
+      device T *dst,
+      uint dst_elements_per_row,
+      ushort2 dst_tile_dimensions,
+
+      // Description of the source.
+      const threadgroup T *src,
+      ushort src_elements_per_row,
+      ushort2 src_tile_dimensions,
+
+      // Other arguments.
+      bool transpose_matrix = false
+    ) thread {
+      if (transpose_matrix) {
+        src_tile_dimensions = src_tile_dimensions.yx;
+        dst_tile_dimensions = dst_tile_dimensions.yx;
+      }
+      event = __metal_simdgroup_async_copy_2d(
+        // Description of the data type.
+        sizeof(T),
+        alignof(T),
+
+        // Description of the destination.
+        reinterpret_cast<device void *>(dst),
+        uint(dst_elements_per_row),
+        1,
+        ulong2(dst_tile_dimensions),
+
+        // Description of the source.
+        reinterpret_cast<const threadgroup void *>(src),
+        ushort(src_elements_per_row),
+        1,
+        ulong2(src_tile_dimensions),
+
+        // Other arguments.
+        long2(0),
+        0);
+    }
+
+    METAL_FUNC static void wait(int count, thread simdgroup_event *events) {
+      __metal_wait_simdgroup_events(
+        count, reinterpret_cast<thread _simdgroup_event_t**>(events));
+    }
+
+  private:
+    // Invoking the generation of LLVM bitcode for async copies.
+    //
+    //   %"struct.metal::simdgroup_event" = type { %struct._simdgroup_event_t* }
+    //
+    thread _simdgroup_event_t* event;
+  };
+} // namespace metal
+#pragma METAL internals : disable
+
+#endif // __METAL_SIMDGROUP_EVENT
+"""
+}
+
+/// Create the source code for the 'metal\_simdgroup\_matrix\_storage' header.
+func createMetalSimdgroupMatrixStorage() -> String {
+  // How this header spawning code was designed.
+  //
+  // Find the patterns between the load/store functions:
+  // - device has 'uint' elements_per_row
+  // - threadgroup has 'ushort' elements_per_row
+  // - both have 'ushort2' matrix_origin
+  //
+  // The origin is 'ushort2' because the 32-bit part of the address should have
+  // been applied previously during 'apply_offset'. The 16-bit part should be
+  // hard-coded into the assembly when the GEMM loop is unrolled.
+  //
+  // Transpose path:
+  // - load: reads two values; should split each one onto a separate line.
+  //   - overwrites the value of *thread_elements() with a new vec<T, 2>
+  // - store: the two instructions are on two separate lines.
+  //   - fetches from lane 0 or 1 of thread_elements()[0]
+  // - adds 0 or 1 to the hard-coded matrix_origin.x
+  //
+  // Address generation:
+  // - casts some intermediate address fragments to 'ulong' for 'device'
+  // - keeps all address fragments in 'ushort' for 'threadgroup'
+
+
+
+  enum Action {
+    case load
+    case store
+  }
+
+  struct MemoryAccessDescriptor {
+    var action: Action?
+    var addressSpace: MTLAddressSpace?
+    var decodingBF16: Bool?
+    var indentationSpaceCount: Int = .zero
+  }
+
+  func createMemoryAccess(
+    descriptor: MemoryAccessDescriptor
+  ) -> String {
+    guard let action = descriptor.action,
+          let addressSpace = descriptor.addressSpace,
+          let decodingBF16 = descriptor.decodingBF16 else {
+      fatalError("Descriptor was incomplete.")
+    }
+    let indentation = String(
+      repeating: " ", count: descriptor.indentationSpaceCount)
+
+    // Determine the arguments.
+    var arguments: [String] = []
+    func addPointerArgument(dataType: String) {
+      if action == .load {
+        arguments.append("const \(addressSpace.keyword) \(dataType) *src")
+      } else {
+        arguments.append("\(addressSpace.keyword) \(dataType) *dst")
+      }
+    }
+    if decodingBF16 {
+      addPointerArgument(dataType: "bfloat")
+    } else {
+      addPointerArgument(dataType: "U")
+    }
+    arguments.append("\(addressSpace.offsetType) elements_per_row")
+    arguments.append("ushort2 matrix_origin")
+    arguments.append("bool transpose_matrix = false")
+
+    // Create the warning comment.
+    var output: String = ""
+    if decodingBF16 {
+      output += "\(indentation)// WARNING: 'T' must be 'float'.\n"
+    } else {
+      output += "\(indentation)template <typename U>\n"
+    }
+
+    // Create the function signature.
+    output += "\(indentation)METAL_FUNC void"
+    if action == .load {
+      output += " load"
+    } else {
+      output += " store"
+    }
+    if decodingBF16 {
+      output += "_bfloat"
+    }
+    output += "("
+    for argumentID in arguments.indices {
+      let argument = arguments[argumentID]
+      output += argument
+      if argumentID < arguments.count - 1 {
+        output += ", "
+      }
+    }
+    output += ") {\n"
+
+    func createAddress(transposed: Bool, offset: Int) -> String {
+      let lineY = "\(addressSpace.offsetType)(matrix_origin.y)"
+      var lineX = "matrix_origin.x + \(offset)"
+      lineX = "\(addressSpace.offsetType)(\(lineX))"
+
+      if transposed {
+        return "\(lineX) * elements_per_row + \(lineY)"
+      } else {
+        return "\(lineY) * elements_per_row + \(lineX)"
+      }
+    }
+
+    func createTwoPartAccess(transposed: Bool) -> [String] {
+      // Generate the addresses.
+      var lines: [String] = []
+      for laneID in 0..<2 {
+        lines.append(
+          "\(addressSpace.offsetType) address\(laneID) = " +
+          createAddress(transposed: transposed, offset: laneID))
+      }
+
+      if action == .load {
+        if decodingBF16 {
+          lines.append("bfloat memoryForm0 = src[address0]")
+          lines.append("bfloat memoryForm1 = src[address1]")
+        } else {
+          lines.append("U memoryForm0 = src[address0]")
+          lines.append("U memoryForm1 = src[address1]")
+        }
+      }
+
+      if action == .load {
+        if decodingBF16 {
+          // Separate the loading logic from the decoding logic for clarity.
+          lines.append(
+            "")
+
+          // BF16 decoding logic.
+          lines.append(
+            "bfloat4 registerForm = *(thread bfloat4*)(thread_elements())")
+          lines.append(
+            "registerForm[1] = memoryForm0")
+          lines.append(
+            "registerForm[3] = memoryForm1")
+          lines.append(
+            "((thread bfloat4*)thread_elements())[0] = registerForm")
+        } else {
+          // Perform a type cast natively supported by the hardware.
+          lines.append("((thread T*)thread_elements())[0] = T(memoryForm0)")
+          lines.append("((thread T*)thread_elements())[1] = T(memoryForm1)")
+        }
+      } else {
+        if decodingBF16 {
+          // BF16 encoding logic.
+          lines.append(
+            "bfloat4 registerForm = *(thread bfloat4*)(thread_elements())")
+          lines.append(
+            "registerForm[2] = registerForm[1]")
+        } else {
+          // Type casts supported natively by the hardware.
+          lines.append("T registerForm0 = ((thread T*)thread_elements())[0]")
+          lines.append("T registerForm1 = ((thread T*)thread_elements())[1]")
+        }
+      }
+
+      if action == .store {
+        if decodingBF16 {
+          lines.append("dst[address0] = registerForm[2]")
+          lines.append("dst[address1] = registerForm[3]")
+        } else {
+          lines.append("dst[address0] = U(registerForm0)")
+          lines.append("dst[address1] = U(registerForm1)")
+        }
+      }
+      return lines
+    }
+
+    func createOnePartAccess() -> [String] {
+      var lines: [String] = []
+      do {
+        let address = createAddress(transposed: false, offset: 0)
+        lines.append("auto combinedAddress = \(address)")
+      }
+      if action == .load {
+        if decodingBF16 {
+          lines.append(
+            "bfloat2 memoryForm = " +
+            "*(const \(addressSpace.keyword) packed_bfloat2*)(src + combinedAddress)")
+
+          // Separate the loading logic from the decoding logic for clarity.
+          lines.append(
+            "")
+
+          // BF16 decoding logic.
+          lines.append(
+            "bfloat4 registerForm = *(thread bfloat4*)(thread_elements())")
+          lines.append(
+            "((thread float*)&registerForm)[1] = *(thread float*)(&memoryForm)")
+          lines.append(
+            "((thread bfloat*)&registerForm)[1] = memoryForm[0]")
+          lines.append(
+            "((thread bfloat4*)thread_elements())[0] = registerForm")
+        } else {
+          lines.append(
+            "vec<U, 2> memoryForm = " +
+            "*(const \(addressSpace.keyword) vec<U, 2>*)(src + combinedAddress)")
+          lines.append(
+            "*(thread_elements()) = vec<T, 2>(memoryForm)")
+        }
+      } else {
+        if decodingBF16 {
+          // BF16 encoding logic.
+          lines.append(
+            "bfloat4 registerForm = *(thread bfloat4*)(thread_elements())")
+          lines.append(
+            "registerForm[2] = registerForm[1]")
+          lines.append(
+            "float memoryForm = ((thread float*)&registerForm)[1]")
+          lines.append(
+            "*(\(addressSpace.keyword) float*)(dst + combinedAddress) = " +
+            "memoryForm")
+        } else {
+          lines.append(
+            "vec<T, 2> registerForm = *(thread_elements())")
+          lines.append(
+            "*(\(addressSpace.keyword) vec<U, 2>*)(dst + combinedAddress) = " +
+            "vec<U, 2>(registerForm)")
+        }
+      }
+      return lines
+    }
+
+    func addBlockContents(_ block: [String]) -> [String] {
+      block.map {
+        if $0.allSatisfy(\.isWhitespace) {
+          return "  "
+        } else {
+          return "  \($0);"
+        }
+      }
+    }
+
+    // Determine the lines of the 'if' block.
+    var body: [String] = []
+    body.append("if (transpose_matrix) {")
+    body += addBlockContents(createTwoPartAccess(transposed: true))
+
+    // Determine the lines of the 'else' block.
+    if decodingBF16 {
+      var blockContents: [String]
+      if action == .load {
+        blockContents = createOnePartAccess()
+      } else {
+        blockContents = createTwoPartAccess(transposed: false)
+      }
+
+      body.append("} else {")
+      body += addBlockContents(blockContents)
+      body.append("}")
+    } else {
+      body.append("} else if (elements_per_row % 2 != 0) {")
+      body += addBlockContents(createTwoPartAccess(transposed: false))
+      body.append("} else {")
+      body += addBlockContents(createOnePartAccess())
+      body.append("}")
+    }
+
+    // Create the function body.
+    for line in body {
+      output += "\(indentation)  \(line)\n"
+    }
+    output += "\(indentation)}\n"
+    return output
+  }
+
+  // Add the first section of the shader.
+  var output: String = ""
+  output += """
+// -*- Metal -*-
+//===-- metal_simdgroup_matrix_storage ------------------------------------===//
+// Copyright (c) 2024 Philip Turner. See MIT LICENSE
+//===----------------------------------------------------------------------===//
+
+#ifndef __METAL_SIMDGROUP_MATRIX_STORAGE
+#define __METAL_SIMDGROUP_MATRIX_STORAGE
+
+// The layout of threads within a SIMD matrix.
+//
+//  0  0  1  1  8  8  9  9
+//  2  2  3  3 10 10 11 11
+//  4  4  5  5 12 12 13 13
+//  6  6  7  7 14 14 15 15
+// 16 16 17 17 24 24 25 25
+// 18 18 19 19 26 26 27 27
+// 20 20 21 21 28 28 29 29
+// 22 22 23 23 30 30 31 31
+//
+// This is Morton order, a method for coalescing data accesses. It is used
+// in a variety of contexts, from ray tracing acceleration structures, to
+// nodal-point Laplacians, to sorting large lattices of atoms.
+//
+// Source: https://patents.google.com/patent/US11256518B2
+METAL_FUNC static ushort2 morton_order(ushort thread_index_in_simdgroup) {
+  ushort lane_id = thread_index_in_simdgroup;
+  ushort quad_id = lane_id / 4;
+
+  constexpr ushort QUADRANT_SPAN_M = 4;
+  constexpr ushort THREADS_PER_QUADRANT = 8;
+  ushort M_floor_of_quadrant = (quad_id / 4) * QUADRANT_SPAN_M;
+  ushort M_in_quadrant = (lane_id / 2) % (THREADS_PER_QUADRANT / 2);
+  ushort M_in_simd = M_floor_of_quadrant + M_in_quadrant;
+
+  ushort N_floor_of_quadrant = (quad_id & 2) * 2; // 0 or 4
+  ushort N_in_quadrant = (lane_id % 2) * 2; // 0 or 2
+  ushort N_in_simd = N_floor_of_quadrant + N_in_quadrant;
+
+  return ushort2(N_in_simd, M_in_simd);
+}
+
+#pragma METAL internals : enable
+namespace metal
+{
+  template <typename T>
+  struct simdgroup_matrix_storage {
+    typedef vec<T, 64> storage_type;
+
+    storage_type t;
+
+    METAL_FUNC thread vec<T, 2>* thread_elements() thread {
+      return reinterpret_cast<thread vec<T, 2>*>(&t);
+    }
+
+    METAL_FUNC simdgroup_matrix_storage() thread = default;
+
+    METAL_FUNC simdgroup_matrix_storage(vec<T, 2> thread_elements) thread {
+      *(this->thread_elements()) = thread_elements;
+    }
+
+    METAL_FUNC static device T* apply_offset(device T *src, uint elements_per_row, uint2 matrix_origin, bool transpose_matrix = false) {
+      if (transpose_matrix) {
+        return src + ulong(matrix_origin.x * elements_per_row) + matrix_origin.y;
+      } else {
+        return src + ulong(matrix_origin.y * elements_per_row) + matrix_origin.x;
+      }
+    }
+
+    METAL_FUNC static threadgroup T* apply_offset(threadgroup T *src, ushort elements_per_row, ushort2 matrix_origin, bool transpose_matrix = false) {
+      if (transpose_matrix) {
+        return src + matrix_origin.x * elements_per_row + matrix_origin.y;
+      } else {
+        return src + matrix_origin.y * elements_per_row + matrix_origin.x;
+      }
+    }
+
+"""
+
+  var desc = MemoryAccessDescriptor()
+  desc.indentationSpaceCount = 4
+
+  for action in [Action.load, .store] {
+    for addressSpace in [MTLAddressSpace.device, .threadgroup] {
+      for decodingBF16 in [false, true] {
+        desc.action = action
+        desc.addressSpace = addressSpace
+
+        desc.decodingBF16 = decodingBF16
+        output += createMemoryAccess(descriptor: desc)
+        output += "\n"
+      }
+    }
+  }
+
+  // Add the last section of the header.
+  output += """
+    template <typename U, typename V>
+    METAL_FUNC void multiply(simdgroup_matrix_storage<U> a, simdgroup_matrix_storage<V> b, bool accumulate = true) {
+      if (!accumulate) {
+        *(thread_elements()) = vec<T, 2>(0);
+      }
+      t = __metal_simdgroup_matrix_8x8_multiply_accumulate(a.t, b.t, t, typename simdgroup_matrix_storage<T>::storage_type());
+    }
+  };
+} // namespace metal
+#pragma METAL internals : disable
+
+#endif // __METAL_SIMDGROUP_MATRIX_STORAGE
+
+"""
+  return output
+}
+
+
+
+---
+FlashAttention/GEMM/GEMMKernelDescriptor.swift
+---
+//
+//  GEMMKernelDescriptor.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+import protocol Metal.MTLDevice
+
+/// A configuration for a GEMM kernel.
+///
+/// The information in this data structure is enough to uniquely identify the
+/// kernel. It can be used as a key in a key-value cache.
+///
+/// ## Usage
+///
+/// The code for generating the GEMM kernel does not include any assumptions
+/// about performance. It should only be responsible for correctly generating
+/// a shader source, provided a configuration. The user is responsible for
+/// choosing that configuration.
+public struct GEMMKernelDescriptor {
+  /// Required. The number of matrix elements spanned by each threadgroup.
+  /// - Parameter M: Number of output columns spanned.
+  /// - Parameter N: Number of output rows spanned.
+  /// - Parameter K: Number of loop iterations unrolled.
+  ///
+  /// Optimal values:
+  /// - Apple7 and Apple8: 48x48x24
+  /// - Apple9 and later: 32x32x8
+  ///
+  /// To reach optimal performance on Apple7 and Apple8, the recommended default
+  /// value needs to be modified conditionally. When all three operands have
+  /// 16-bit memory precisions, change `K` to 32. When the matrix is too small
+  /// to saturate all of the GPU cores, change all dimensions to 32x32x32. Even
+  /// smaller blocks can be exploited in low-occupancy cases, but 32x32 and
+  /// 48x48 are sufficient for general use.
+  ///
+  /// For simplicity or an out-of-the-box performance test, one can assume
+  /// occupancy is always high. But to match the performance of MPS, one must
+  /// optimize for small problem sizes on large GPUs.
+  ///
+  /// ## Choosing Block Size by Precision
+  ///
+  /// Legend:
+  /// - memA: precision for left input matrix, in memory
+  /// - memB: precision for right input matrix, in memory
+  /// - memC: precision for output matrix, in memory
+  /// - regA: precision for left input matrix, in registers
+  /// - regB: precision for right input matrix, in registers
+  /// - regC: precision for output matrix, in registers
+  /// - M1: optimal block size on Apple7 and Apple8
+  /// - M3: optimal block size on Apple9 and later
+  ///
+  /// memA | memB | memC | regA | regB | regC | M1       | M3      |
+  /// ---- | ---- | ---- | ---- | ---- | ---- | -------- | ------- |
+  /// FP16 | FP16 | FP16 | any  | any  | any  | 48x48x32 | 32x32x8 |
+  /// BF16 | BF16 | BF16 | any  | any  | any  | 48x48x32 | 32x32x8 |
+  /// FP16 | FP16 | FP32 | any  | any  | any  | 48x48x24 | 32x32x8 |
+  /// BF16 | BF16 | FP32 | any  | any  | any  | 48x48x24 | 32x32x8 |
+  /// FP16 | FP32 | FP16 | any  | any  | any  | 48x48x24 | 32x32x8 |
+  /// BF16 | FP32 | BF16 | any  | any  | any  | 48x48x24 | 32x32x8 |
+  /// FP32 | FP32 | FP32 | any  | any  | any  | 48x48x24 | 32x32x8 |
+  ///
+  /// ## Detecting Low-Occupancy Cases
+  ///
+  /// To determine whether the matrix saturates the GPU, divide the output
+  /// matrix's dimensions by 48x48. Round up to the nearest integer. Then,
+  /// multiply the number of row blocks by the number of column blocks. The
+  /// result is the number of threadgroups dispatched. For example, a C matrix
+  /// with dimensions 768x768 would dispatch 256 threadgroups. If you are
+  /// batching multiple matrix multiplications into one shader call, multiply
+  /// the number of threadgroups by the batch count.
+  ///
+  /// Next, calculate the target occupancy. Start by finding the GPU core count.
+  /// This can be accomplished in many ways; there is a heavily tested reference
+  /// implementation [here](https://github.com/philipturner/applegpuinfo). On
+  /// macOS, you can query the core count through IORegistry. On iOS, go with a
+  /// conservative (meaning more likely to overestimate) estimate of 5 cores on
+  /// A14 - A16, 10 cores on M1 - M2.
+  ///
+  /// When one of the operands is 32-bit, the target occupancy is 6 threadgroups
+  /// per core. When all three operands are 16-bit, the target increases to 9
+  /// per core. Multiply the number of cores by the number of threadgroups per
+  /// core. If the total GPU occupancy is greater than or equal to the number of
+  /// matrix blocks, use the smaller blocking scheme.
+  ///
+  /// For example, the following decision tree would be used on an M1 Max
+  /// (32 cores).
+  ///
+  /// ```
+  /// is device Apple9 or later?
+  /// yes: use block size 32x32x8
+  /// no: continue decision tree [selected decision]
+  /// unsure: use block size 48x48x24-32
+  ///
+  /// compute number of matrix blocks
+  /// 768x768 / 48x48 = 16.0 x 16.0
+  ///   round floating point (16.0 x 16.0)
+  ///   to next greatest integer (16 x 16)
+  ///  16 x 16 x (batch size of 1) = 256 threadgroups
+  ///
+  /// compute target occupancies with 48x48 scheme
+  /// 32 x 6 = 192 [selected when A, B, or C is FP32]
+  /// 32 x 9 = 288 [selected when every matrix is FP16/BF16]
+  ///
+  /// prefer 32x32 when 48x48 has low occupancy
+  /// if 256 ≤ 192
+  ///    choose small block size (32x32x32xFP32)
+  /// else
+  ///    choose large block size (48x48x24xFP32) [selected]
+  /// if 256 ≤ 288
+  ///   choose small block size (32x32x32xFP16) [selected]
+  /// else
+  ///   choose large block size (48x48x32xFP16)
+  /// ```
+  public var blockDimensions: (M: UInt16, N: UInt16, K: UInt16)?
+
+  /// Optional. The layout of elements in threadgroup memory.
+  ///
+  /// If not specified, the default value matches the actual block dimensions.
+  ///
+  /// This property can be used to avoid bank conflicts. For example, of one
+  /// operand will have 16 FP32 elements per row, there is good chance of
+  /// increased bank conflicts on M1. One may pad that threadgroup memory
+  /// allocation to 20 FP32 elements per row.
+  public var leadingBlockDimensions: (A: UInt16, B: UInt16, C: UInt16)?
+
+  public var memoryPrecisions: (
+    A: GEMMOperandPrecision, B: GEMMOperandPrecision, C: GEMMOperandPrecision)?
+
+  /// Required. Whether async copies will improve performance during the
+  /// matrix multiplication loop.
+  ///
+  /// The default value is `true`. Async copies improve performance on Apple7
+  /// and Apple8, but harm performance on Apple9 and later. However, they are
+  /// essential for correctness when reading from the edges of unaligned
+  /// matrices. Setting the value to `false` means skipping async copies when
+  /// doing so will not change the final result.
+  public var preferAsyncLoad: Bool = true
+
+  /// Required. Whether async copies will improve performance when storing the
+  /// accumulator to main memory.
+  ///
+  /// There is no default value that will reliably yield consistent performance.
+  public var preferAsyncStore: Bool?
+
+  /// Set the register precision based on the GPU architecture, and your choice
+  /// for memory precision. The following set of logic statements should provide
+  /// optimal performance for all permutations of operand precisions.
+  ///
+  /// ```
+  /// regA is identical to memA
+  /// regB is identical to memB
+  /// If memA, memB, and memC are FP16,
+  ///   regC is FP16
+  /// else
+  ///   regC is FP32
+  ///
+  /// If earlier than M3
+  ///   If memA is BF16,
+  ///     regA is FP32
+  ///   If memB is BF16,
+  ///     regB is FP32
+  /// ```
+  public var registerPrecisions: (
+    A: GEMMOperandPrecision, B: GEMMOperandPrecision, C: GEMMOperandPrecision)?
+
+  /// Required. The array of SIMDs to divide the threadgroup into.
+  ///
+  /// Optimal values:
+  /// - Apple7 and Apple8: 2x2
+  /// - Apple9 and later: 1x1
+  public var splits: (M: UInt16, N: UInt16)?
+
+  /// Required. Whether each of the inputs deviates from row-major order.
+  public var transposeState: (A: Bool, B: Bool)?
+
+  public init() {
+
+  }
+}
+
+struct GEMMKernelKey: Equatable, Hashable {
+  var blockDimensions: SIMD3<UInt16>
+  var leadingBlockDimensions: SIMD3<UInt16>
+  var memoryPrecisions: SIMD3<UInt16>
+  var preferAsyncLoad: UInt8
+  var preferAsyncStore: UInt8
+  var registerPrecisions: SIMD3<UInt16>
+  var splits: SIMD2<UInt16>
+  var transposeState: SIMD2<UInt8>
+
+  init(copying source: GEMMKernelDescriptor) {
+    blockDimensions = Self.createBlockDimensions(source.blockDimensions)
+    leadingBlockDimensions = Self.createBlockDimensions(
+      source.leadingBlockDimensions)
+    memoryPrecisions = Self.createPrecisions(source.memoryPrecisions)
+    preferAsyncLoad = Self.createBoolean(source.preferAsyncLoad)
+    preferAsyncStore = Self.createBoolean(source.preferAsyncStore)
+    registerPrecisions = Self.createPrecisions(source.registerPrecisions)
+
+    splits = SIMD2(repeating: .max)
+    if let (M, N) = source.splits {
+      splits[0] = M
+      splits[1] = N
+    }
+    transposeState = Self.createTransposeState(source.transposeState)
+  }
+
+  @_transparent // performance in -Ounchecked
+  static func createBlockDimensions(
+    _ input: (UInt16, UInt16, UInt16)?
+  ) -> SIMD3<UInt16> {
+    if let input {
+      return SIMD3(input.0, input.1, input.2)
+    } else {
+      return SIMD3(repeating: .max)
+    }
+  }
+
+  @_transparent // performance in -Ounchecked
+  static func createBoolean(
+    _ input: Bool?
+  ) -> UInt8 {
+    if let input {
+      return input ? 1 : 0
+    } else {
+      return UInt8.max
+    }
+  }
+
+  @_transparent // performance in -Ounchecked
+  static func createPrecisions(
+    _ input: (
+      GEMMOperandPrecision, GEMMOperandPrecision, GEMMOperandPrecision)?
+  ) -> SIMD3<UInt16> {
+    if let input {
+      return SIMD3(input.0.rawValue, input.1.rawValue, input.2.rawValue)
+    } else {
+      return SIMD3(repeating: .max)
+    }
+  }
+
+  @_transparent // performance in -Ounchecked
+  static func createTransposeState(
+    _ input: (Bool, Bool)?
+  ) -> SIMD2<UInt8> {
+    if let input {
+      return SIMD2(input.0 ? 1 : 0,
+                   input.1 ? 1 : 0)
+    } else {
+      return SIMD2(repeating: .max)
+    }
+  }
+}
+
+extension GEMMKernelDescriptor: Hashable, Equatable {
+  public static func == (
+    lhs: GEMMKernelDescriptor,
+    rhs: GEMMKernelDescriptor
+  ) -> Bool {
+    let lhsKey = GEMMKernelKey(copying: lhs)
+    let rhsKey = GEMMKernelKey(copying: rhs)
+    return lhsKey == rhsKey
+  }
+
+  public func hash(into hasher: inout Hasher) {
+    let key = GEMMKernelKey(copying: self)
+    hasher.combine(key)
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMOperandPrecision.swift
+---
+//
+//  GEMMOperandPrecision.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+/// An enumeration of the precisions supported by the kernel.
+///
+/// If you wish to support quantized precisions, copy/translate the source code
+/// and integrate a modified version into your app. Something similar to a Swift
+/// `enum` (e.g. C++ `enum class`) could enumerate the quantization formats
+/// used by application code. An exemplary set could be:
+/// - FP32
+/// - FP16
+/// - BF16
+/// - signed 8-bit integer
+/// - s1ezm7
+/// - FP8
+/// - palletized
+///
+/// If you support non-floating-point formats, you have the responsibility of
+/// authoring correct and performant GPU code for them. A general rule of thumb,
+/// is keep the data compressed in `device` or `threadgroup` memory. Transform
+/// into a floating point type while loading into the registers. Keep the
+/// accumulator in floating point until the output needs to be written.
+/// If the output is quantized, it will be compressed when writing back to
+/// `device` memory (or `threadgroup` before the async copy in edge cases).
+///
+/// For example, the reference implementation treats BF16 like a quantized
+/// integer type on Apple7 and Apple8 GPUs. It is decompressed to FP32 in
+/// registers.
+public enum GEMMOperandPrecision: UInt16 {
+  case FP32 = 0
+  case FP16 = 1
+  case BF16 = 2
+
+  // The MSL keyword corresponding to the precision.
+  public var name: String {
+    switch self {
+    case .FP32:
+      return "float"
+    case .FP16:
+      return "half"
+    case .BF16:
+      return "bfloat"
+    }
+  }
+
+  // The size of a scalar, in bytes.
+  public var size: Int {
+    switch self {
+    case .FP32:
+      return 4
+    case .FP16:
+      return 2
+    case .BF16:
+      return 2
+    }
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMKernel/GEMMKernel+Caching.swift
+---
+//
+//  GEMMKernel+Caching.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 8/3/24.
+//
+
+extension GEMMKernel {
+  // Whether the accumulator can be written directly to RAM.
+  fileprivate var directAccessCondition: String {
+    if preferAsyncStore {
+      return "false"
+    } else {
+      // In the vanilla GEMM kernel, the extra storing code can be optimized
+      // away at compile time. The compiler may allocate less registers, and
+      // occupancy may be greater.
+      var output = "(M >= M_group) && (N >= N_group)"
+
+      // When accumulate is supported, there are overlapping writes. We must
+      // sanitize the matrix edge with async copy. The optimization from
+      // the unified GEMM kernel cannot be applied.
+      //
+      // Ideally, a client implementation would add a GEMMKernelDescriptor
+      // property for whether in-place accumulation was enabled. When false,
+      // the statements below are not part of the direct-access condition.
+      // The code for loading C from memory would be elided at
+      // code-generation time.
+      //
+      // MFA has settled on a function constant to toggle accumulation.
+      output += " && (load_previous_C ? (M_offset == gid.y * M_group) : true)"
+      output += " && (load_previous_C ? (N_offset == gid.x * N_group) : true)"
+      return output
+    }
+  }
+
+  func createInitializeC() -> String {
+    """
+
+    simdgroup_matrix_storage<\(registerName("C"))> C_sram[
+      \((registerM / 8) * (registerN / 8))];
+
+    if (load_previous_C) {
+      \(createLoadC())
+    } else {
+      #pragma clang loop unroll(full)
+      for (ushort m = 0; m < \(registerM); m += 8) {
+        #pragma clang loop unroll(full)
+        for (ushort n = 0; n < \(registerN); n += 8) {
+          ushort2 origin(n, m);
+          auto C = get_sram(C_sram, \(registerN), origin);
+          *C = simdgroup_matrix_storage<\(registerName("C"))>(0);
+        }
+      }
+    }
+
+    """
+  }
+
+  func createLoadC() -> String {
+    var loadFunctionC: String
+    if memoryPrecisions.C == .BF16,
+       registerPrecisions.C == .FP32 {
+      loadFunctionC = "load_bfloat"
+    } else {
+      loadFunctionC = "load"
+    }
+
+    return """
+
+if (\(directAccessCondition)) {
+  // Fast path for matrices that qualify.
+  uint2 C_offset(N_offset + offset_in_group.x,
+                 M_offset + offset_in_group.y);
+  auto C_dst = simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+    C, \(leadingDimension("C")), C_offset);
+
+  // Write the accumulator to device memory.
+#pragma clang loop unroll(full)
+  for (ushort m = 0; m < \(registerM); m += 8) {
+#pragma clang loop unroll(full)
+    for (ushort n = 0; n < \(registerN); n += 8) {
+      ushort2 origin(n, m);
+      auto C = get_sram(C_sram, \(registerN), origin);
+      C->\(loadFunctionC)(C_dst, \(leadingDimension("C")), origin);
+    }
+  }
+} else {
+  // Slow path for when memory must be handled more carefully.
+  auto C_block = (threadgroup \(memoryName("C"))*)(threadgroup_block);
+  auto C_block_dst =
+  simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+    C_block, \(leadingBlockDimensions.C), offset_in_group);
+
+  // Launch the async copy from threadgroup to device memory.
+  if (sidx == 0) {
+    uint2 C_offset(N_offset, M_offset);
+    ushort2 C_tile(min(uint(N_group), N - C_offset.x),
+                   min(uint(M_group), M - C_offset.y));
+    auto C_dst = simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+      C, \(leadingDimension("C")), C_offset);
+
+    simdgroup_event event;
+    event.async_copy(
+      C_block, \(leadingBlockDimensions.C), C_tile,
+      C_dst, \(leadingDimension("C")), C_tile);
+    simdgroup_event::wait(1, &event);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Read the accumulator from threadgroup memory.
+#pragma clang loop unroll(full)
+  for (ushort m = 0; m < \(registerM); m += 8) {
+#pragma clang loop unroll(full)
+    for (ushort n = 0; n < \(registerN); n += 8) {
+      ushort2 origin(n, m);
+      auto C = get_sram(C_sram, \(registerN), origin);
+      C->\(loadFunctionC)(
+        C_block_dst, \(leadingBlockDimensions.C), origin);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+"""
+  }
+
+  func createStoreC() -> String {
+    var storeFunctionC: String
+    if memoryPrecisions.C == .BF16,
+       registerPrecisions.C == .FP32 {
+      storeFunctionC = "store_bfloat"
+    } else {
+      storeFunctionC = "store"
+    }
+
+    return """
+
+if (\(directAccessCondition)) {
+  // Fast path for matrices that qualify.
+  uint2 C_offset(N_offset + offset_in_group.x,
+                 M_offset + offset_in_group.y);
+  auto C_dst = simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+    C, \(leadingDimension("C")), C_offset);
+
+  // Write the accumulator to device memory.
+#pragma clang loop unroll(full)
+  for (ushort m = 0; m < \(registerM); m += 8) {
+#pragma clang loop unroll(full)
+    for (ushort n = 0; n < \(registerN); n += 8) {
+      ushort2 origin(n, m);
+      auto C = get_sram(C_sram, \(registerN), origin);
+      C->\(storeFunctionC)(C_dst, \(leadingDimension("C")), origin);
+    }
+  }
+} else {
+  // Slow path for when memory must be handled more carefully.
+  auto C_block = (threadgroup \(memoryName("C"))*)(threadgroup_block);
+  auto C_block_dst =
+  simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+    C_block, \(leadingBlockDimensions.C), offset_in_group);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Write the accumulator to threadgroup memory.
+#pragma clang loop unroll(full)
+  for (ushort m = 0; m < \(registerM); m += 8) {
+#pragma clang loop unroll(full)
+    for (ushort n = 0; n < \(registerN); n += 8) {
+      ushort2 origin(n, m);
+      auto C = get_sram(C_sram, \(registerN), origin);
+      C->\(storeFunctionC)(
+        C_block_dst, \(leadingBlockDimensions.C), origin);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Launch the async copy from threadgroup to device memory.
+  if (sidx == 0) {
+    uint2 C_offset(gid.x * N_group, gid.y * M_group);
+    ushort2 C_tile(min(uint(N_group), N - C_offset.x),
+                   min(uint(M_group), M - C_offset.y));
+    auto C_dst = simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+      C, \(leadingDimension("C")), C_offset);
+
+    // If we shift successfully, the garbage zone moves from the bottom right
+    // to the top left.
+    if ((M_shift != 0) || (N_shift != 0)) {
+      ushort2 C_block_shift(0, 0);
+      if ((M_shift != 0) && (C_offset.y >= M_edge)) {
+        C_block_shift.y = M_shift;
+      }
+      if ((N_shift != 0) && (C_offset.x >= N_edge)) {
+        C_block_shift.x = N_shift;
+      }
+      C_block = simdgroup_matrix_storage<\(memoryName("C"))>::apply_offset(
+        C_block, \(leadingBlockDimensions.C), C_block_shift);
+    }
+
+    simdgroup_event event;
+    event.async_copy(
+      C_dst, \(leadingDimension("C")), C_tile,
+      C_block, \(leadingBlockDimensions.C), C_tile);
+  }
+}
+"""
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMKernel/GEMMKernel+Multiply.swift
+---
+//
+//  GEMMKernel+Multiply.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 8/3/24.
+//
+
+extension GEMMKernel {
+  struct MultiplyDescriptor {
+    var addressSpace: String?
+    var leadingDimensionA: String?
+    var leadingDimensionB: String?
+    var loadFunctionA: String?
+    var loadFunctionB: String?
+  }
+
+  func createMultiply(descriptor: MultiplyDescriptor) -> String {
+    guard let addressSpace = descriptor.addressSpace,
+          let leadingDimensionA = descriptor.leadingDimensionA,
+          let leadingDimensionB = descriptor.leadingDimensionB,
+          let loadFunctionA = descriptor.loadFunctionA,
+          let loadFunctionB = descriptor.loadFunctionB else {
+      fatalError("Descriptor was incomplete.")
+    }
+
+    return """
+
+// One multiply-accumulate loop iteration, or 8 dot products.
+METAL_FUNC void multiply_accumulate(
+const \(addressSpace) \(memoryName("A")) *A_src,
+const \(addressSpace) \(memoryName("B")) *B_src,
+thread simdgroup_matrix_storage<\(registerName("A"))> *A_sram,
+thread simdgroup_matrix_storage<\(registerName("B"))> *B_sram,
+thread simdgroup_matrix_storage<\(registerName("C"))> *C_sram,
+ushort k
+) {
+#pragma clang loop unroll(full)
+for (ushort m = 0; m < \(registerM); m += 8) {
+  ushort2 origin(0, m);
+  auto A = get_sram(A_sram, 8, origin);
+  A->\(loadFunctionA)(A_src, \(leadingDimensionA), ushort2(k, m), A_trans);
+}
+#pragma clang loop unroll(full)
+for (ushort n = 0; n < \(registerN); n += 8) {
+  ushort2 origin(n, 0);
+  auto B = get_sram(B_sram, \(registerN), origin);
+  B->\(loadFunctionB)(B_src, \(leadingDimensionB), ushort2(n, k), B_trans);
+}
+#pragma clang loop unroll(full)
+for (ushort m = 0; m < \(registerM); m += 8) {
+#pragma clang loop unroll(full)
+  for (ushort n = 0; n < \(registerN); n += 8) {
+    auto A = get_sram(A_sram, 8, ushort2(0, m));
+    auto B = get_sram(B_sram, \(registerN), ushort2(n, 0));
+    auto C = get_sram(C_sram, \(registerN), ushort2(n, m));
+    C->multiply(*A, *B);
+  }
+}
+}
+
+"""
+  }
+
+  func createUtilities() -> String {
+    // Add the utility functions.
+    var output = """
+
+// Indexes into an array of registers.
+//
+// Calls to this function are expected to be evaluated at compile time. The
+// array indices transform into register offsets, which are embedded into the
+// assembly code.
+template <typename T>
+METAL_FUNC thread simdgroup_matrix_storage<T>* get_sram(
+  thread simdgroup_matrix_storage<T> *sram,
+  ushort sram_leading_dim,
+  ushort2 matrix_origin
+) {
+  return sram + (matrix_origin.y / 8) * (sram_leading_dim / 8) + (matrix_origin.x / 8);
+}
+"""
+
+    // Add the utility functions for the multiply-accumulate inner loop.
+    do {
+      var multiplyDesc = MultiplyDescriptor()
+      if memoryPrecisions.A == .BF16, registerPrecisions.A == .FP32 {
+        multiplyDesc.loadFunctionA = "load_bfloat"
+      } else {
+        multiplyDesc.loadFunctionA = "load"
+      }
+      if memoryPrecisions.B == .BF16, registerPrecisions.B == .FP32 {
+        multiplyDesc.loadFunctionB = "load_bfloat"
+      } else {
+        multiplyDesc.loadFunctionB = "load"
+      }
+
+      multiplyDesc.addressSpace = "device"
+      multiplyDesc.leadingDimensionA = leadingDimension("A")
+      multiplyDesc.leadingDimensionB = leadingDimension("B")
+      output += createMultiply(descriptor: multiplyDesc)
+
+      multiplyDesc.addressSpace = "threadgroup"
+      multiplyDesc.leadingDimensionA = "\(leadingBlockDimensions.A)"
+      multiplyDesc.leadingDimensionB = "\(leadingBlockDimensions.B)"
+      output += createMultiply(descriptor: multiplyDesc)
+    }
+
+    return output
+  }
+}
+
+extension GEMMKernel {
+  func createMultiplyIterations() -> String {
+    var asyncIterationsStart: String
+    if preferAsyncLoad {
+      asyncIterationsStart = "0"
+    } else {
+      asyncIterationsStart = "(K - (K % K_group))"
+    }
+    let paddedCeilingK = "(K + K_remainder_padded - K_remainder)"
+
+    return """
+
+// Perform the iterations where async copy is avoided.
+for (uint k = 0; k < \(asyncIterationsStart); k += 8) {
+  uint2 A_offset(k, M_offset);
+  uint2 B_offset(N_offset, k);
+  A_offset += uint2(morton_offset.x, offset_in_group.y);
+  B_offset += uint2(offset_in_group.x, morton_offset.y);
+
+  auto A_src = simdgroup_matrix_storage<\(memoryName("A"))>::apply_offset(
+    A, \(leadingDimension("A")), A_offset, A_trans);
+  auto B_src = simdgroup_matrix_storage<\(memoryName("B"))>::apply_offset(
+    B, \(leadingDimension("B")), B_offset, B_trans);
+
+  simdgroup_matrix_storage<\(registerName("A"))> A_sram[
+    \(registerM / 8) * (8 / 8)];
+  simdgroup_matrix_storage<\(registerName("B"))> B_sram[
+    (8 / 8) * \(registerN / 8)];
+  multiply_accumulate(A_src, B_src,
+                      A_sram, B_sram, C_sram, 0);
+}
+
+// Perform the iterations where async copy is used.
+for (uint k = \(asyncIterationsStart); k < K; k += K_group) {
+  auto A_block = (threadgroup \(memoryName("A"))*)(
+    threadgroup_block);
+  auto B_block = (threadgroup \(memoryName("B"))*)(
+    threadgroup_block + \(blockBytes("A")));
+
+  // Launch an async copy from device to threadgroup memory.
+  if (sidx == 0) {
+    uint2 A_offset(k, M_offset);
+    uint2 B_offset(N_offset, k);
+    auto A_src = simdgroup_matrix_storage<\(memoryName("A"))>::apply_offset(
+      A, \(leadingDimension("A")), A_offset, A_trans);
+    auto B_src = simdgroup_matrix_storage<\(memoryName("B"))>::apply_offset(
+      B, \(leadingDimension("B")), B_offset, B_trans);
+
+    ushort M_tile_dimension = min(uint(M_group), M - M_offset);
+    ushort N_tile_dimension = min(uint(N_group), N - N_offset);
+    ushort K_tile_dimension = min(uint(K_group), K - k);
+    ushort K_tile_padded = min(uint(K_group), \(paddedCeilingK) - k);
+
+    ushort2 A_tile_src(K_tile_dimension, M_tile_dimension);
+    ushort2 B_tile_src(N_tile_dimension, K_tile_dimension);
+    ushort2 A_tile_dst(K_tile_padded, M_tile_dimension);
+    ushort2 B_tile_dst(N_tile_dimension, K_tile_padded);
+
+    simdgroup_event events[2];
+    events[0].async_copy(
+      A_block, \(leadingBlockDimensions.A), A_tile_dst,
+      A_src, \(leadingDimension("A")), A_tile_src, A_trans);
+    events[1].async_copy(
+      B_block, \(leadingBlockDimensions.B), B_tile_dst,
+      B_src, \(leadingDimension("B")), B_tile_src, B_trans);
+    simdgroup_event::wait(2, events);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  ushort2 A_block_offset(morton_offset.x, offset_in_group.y);
+  ushort2 B_block_offset(offset_in_group.x, morton_offset.y);
+  auto A_block_src = A_block;
+  auto B_block_src = B_block;
+  A_block_src = simdgroup_matrix_storage<\(memoryName("A"))>::apply_offset(
+    A_block_src, \(leadingBlockDimensions.A), A_block_offset, A_trans);
+  B_block_src = simdgroup_matrix_storage<\(memoryName("B"))>::apply_offset(
+    B_block_src, \(leadingBlockDimensions.B), B_block_offset, B_trans);
+
+  simdgroup_matrix_storage<\(registerName("A"))> A_sram[
+    \(registerM / 8) * (K_group / 8)];
+  simdgroup_matrix_storage<\(registerName("B"))> B_sram[
+    (K_group / 8) * \(registerN / 8)];
+#pragma clang loop unroll(full)
+  for (ushort k = 0; k < K_remainder_padded; k += 8) {
+    multiply_accumulate(A_block_src, B_block_src,
+                        A_sram, B_sram, C_sram, k);
+  }
+
+  // Will there be any iterations after this one?
+  if (k + K_group < K) {
+    // If so, we haven't reached the edge of either input matrix yet.
+#pragma clang loop unroll(full)
+    for (ushort k = K_remainder_padded; k < K_group; k += 8) {
+      multiply_accumulate(A_block_src, B_block_src,
+                          A_sram, B_sram, C_sram, k);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+
+"""
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMKernel/GEMMKernel+Source.swift
+---
+//
+//  GEMMKernel+Source.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 8/3/24.
+//
+
+extension GEMMKernel {
+  public func createSource() -> String {
+    return """
+
+\(createMetalSimdgroupEvent())
+\(createMetalSimdgroupMatrixStorage())
+using namespace metal;
+
+\(createConstants())
+\(createUtilities())
+
+// Metal function arguments.
+//
+// A: the left-hand side matrix
+// - dimensions: M x K
+//               K x M (transposed)
+// - memory precision: memA
+// - register precision: regA
+//
+// B: the right-hand side matrix
+// - dimensions: K x N
+//               N x K (transposed)
+// - memory precision: memB
+// - register precision: regB
+//
+// C: the output matrix, alternatively the dot product accumulator
+// - dimensions: M x N
+// - memory precision: memC
+// - register precision: regC
+//
+// threadgroup_block: the chunk of threadgroup memory allocated at runtime
+// - ideally 10 KB or less
+// - precision: void/8-bit integer to make the pointer arithmetic more legible
+
+kernel void gemm(device \(memoryName("A")) *A [[buffer(0)]],
+                 device \(memoryName("B")) *B [[buffer(1)]],
+                 device \(memoryName("C")) *C [[buffer(2)]],
+                 threadgroup uchar *threadgroup_block [[threadgroup(0)]],
+
+                 uint3 gid [[threadgroup_position_in_grid]],
+                 ushort sidx [[simdgroup_index_in_threadgroup]],
+                 ushort lane_id [[thread_index_in_simdgroup]])
+{
+  ushort2 sid(sidx % \(splits.N), sidx / \(splits.N));
+  ushort2 morton_offset = morton_order(lane_id);
+
+  // Return early if the SIMD is out of bounds.
+  //
+  // There could be some threadgroups where the matrix edge cuts straight
+  // through the middle of the block. SIMDs on the right or bottom of the
+  // dividing line must be stopped from causing out-of-bounds accesses. This is
+  // the reason for the early exit.
+  uint M_offset = gid.y * M_group;
+  uint N_offset = gid.x * N_group;
+  if (M_offset + sid.y * \(registerM) >= M ||
+      N_offset + sid.x * \(registerN) >= N) {
+    return;
+  }
+  ushort2 offset_in_group(sid.x * \(registerN) + morton_offset.x,
+                          sid.y * \(registerM) + morton_offset.y);
+
+  // Shift the matrix block within bounds, if possible.
+  if ((M_shift != 0) && (gid.y * M_group >= M_edge)) {
+    M_offset -= M_shift;
+  }
+  if ((N_shift != 0) && (gid.x * N_group >= N_edge)) {
+    N_offset -= N_shift;
+  }
+
+  \(createInitializeC())
+  \(createMultiplyIterations())
+  \(createStoreC())
+}
+
+"""
+  }
+}
+
+extension GEMMKernel {
+  func createConstants() -> String {
+    """
+
+// Dimensions of each matrix.
+// - Limitations to matrix size:
+//   - 2^32 in each dimension (M/N/K).
+//   - Extending to 2^64 may require changing 'uint' to 'ulong'. There is a
+//     good chance this will significantly degrade performance, and require
+//     changing the data type of several variables that process addresses. The
+//     client is responsible for ensuring correctness and performance with
+//     matrices spanning several billion elements in one direction.
+//   - The matrix dimensions must be known at compile time, via function
+//     constants. Dynamic matrix shapes are beyond the scope of this reference
+//     implementation. Dynamic shapes cause a non-negligible regression to
+//     shader execution speed. However, they could minimize a compilation
+//     latency bottleneck in some use cases.
+// - Limitations to batch size:
+//   - Dictated by how the client modifies the code to implement batching.
+//   - Dynamic batch shapes would likely not harm performance much. For example,
+//     someone could enter an array of pointers/memory offsets to different
+//     matrices in the batch. Each slice of a 3D thread grid could read a
+//     different pointer from memory, and use that pointer as the A/B/C matrix.
+//     Another approach is to restrict the input format, so all matrices are
+//     stored contiguously in memory. Then, the memory offset could be computed
+//     analytically from matrix size and the Z dimension in a 3D thread grid.
+//
+// Another note:
+// - The rows of the matrix must be contiguous in memory. Supporting strides
+//   that differ from the actual matrix dimensions should not be difficult, but
+//   it is out of scope for this reference kernel.
+constant uint M [[function_constant(0)]];
+constant uint N [[function_constant(1)]];
+constant uint K [[function_constant(2)]];
+
+// Specify the leading dimensions at PSO creation time.
+constant uint A_leading_dimension [[function_constant(5)]];
+constant uint B_leading_dimension [[function_constant(6)]];
+constant uint C_leading_dimension [[function_constant(7)]];
+
+// Whether to load the previous value of C, and add it to the accumulator.
+constant bool load_previous_C [[function_constant(10)]];
+
+// Whether each matrix is transposed.
+constant bool A_trans = \(transposeState.A);
+constant bool B_trans = \(transposeState.B);
+
+// Define the memory layout of the matrix block.
+constant ushort M_group = \(blockDimensions.M);
+constant ushort N_group = \(blockDimensions.N);
+constant ushort K_group = \(blockDimensions.K);
+
+// Thresholds that mark the matrix edge.
+constant uint M_edge = M - (M % M_group);
+constant uint N_edge = N - (N % N_group);
+
+// Find the number of elements in the final block. If the matrix
+// dimensions are perfectly divisibly by block dimensions, we don't want
+// this value to be zero. The final block is a full block.
+constant ushort M_remainder = (M % \(registerM) == 0)
+  ? \(registerM) : M % \(registerM);
+constant ushort N_remainder = (N % \(registerN) == 0)
+  ? \(registerN) : N % \(registerN);
+constant ushort K_remainder = (K % K_group == 0)
+  ? K_group : K % K_group;
+constant ushort K_remainder_padded = (K_remainder + 7) / 8 * 8;
+
+// Shift the final block, so it doesn't access out-of-bounds memory.
+constant ushort M_shift = (M < M_group) ? 0 : \(registerM) - M_remainder;
+constant ushort N_shift = (N < N_group) ? 0 : \(registerN) - N_remainder;
+
+"""
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMKernel/GEMMKernel.swift
+---
+//
+//  GEMMKernel.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+import protocol Metal.MTLLibrary
+
+public struct GEMMKernel {
+  // Categorical attributes for each operand.
+  var memoryPrecisions: (
+    A: GEMMOperandPrecision, B: GEMMOperandPrecision, C: GEMMOperandPrecision)
+  var preferAsyncLoad: Bool
+  var preferAsyncStore: Bool
+  var registerPrecisions: (
+    A: GEMMOperandPrecision, B: GEMMOperandPrecision, C: GEMMOperandPrecision)
+  var transposeState: (A: Bool, B: Bool)
+
+  // Layout of the data in registers and threadgroup memory.
+  public var blockDimensions: (M: UInt16, N: UInt16, K: UInt16)
+  var leadingBlockDimensions: (A: UInt16, B: UInt16, C: UInt16)
+  var splits: (M: UInt16, N: UInt16)
+  public var threadgroupMemoryAllocation: UInt16
+
+  public init(descriptor: GEMMKernelDescriptor) {
+    guard let blockDimensions = descriptor.blockDimensions,
+          let memoryPrecisions = descriptor.memoryPrecisions,
+          let preferAsyncStore = descriptor.preferAsyncStore,
+          let registerPrecisions = descriptor.registerPrecisions,
+          let splits = descriptor.splits,
+          let transposeState = descriptor.transposeState else {
+      fatalError("Descriptor was incomplete: \(descriptor)")
+    }
+
+    self.memoryPrecisions = memoryPrecisions
+    self.preferAsyncLoad = descriptor.preferAsyncLoad
+    self.preferAsyncStore = preferAsyncStore
+    self.registerPrecisions = registerPrecisions
+
+    self.blockDimensions = blockDimensions
+    self.splits = splits
+    self.transposeState = transposeState
+
+    // Validate the correctness of register precisions.
+    func checkOperandPair(
+      memory: GEMMOperandPrecision,
+      register: GEMMOperandPrecision
+    ) -> Bool {
+      // Truth table:
+      //
+      // memory | register | valid |
+      // ------ | -------- | ----- |
+      // FP32   | FP32     | yes   |
+      // FP32   | FP16     | no    |
+      // FP32   | BF16     | no    |
+      // FP16   | FP32     | yes   |
+      // FP16   | FP16     | yes   |
+      // FP16   | BF16     | no    |
+      // BF16   | FP32     | yes   |
+      // BF16   | FP16     | no    |
+      // BF16   | BF16     | yes   |
+      //
+      // Optimized form of the logic:
+      //
+      // If the register precision matches the memory precision,
+      //   return true
+      // If the register precision equals FP32,
+      //   return true
+      // Otherwise,
+      //   return false
+      //
+      // The logic statements will change if you introduce custom quantized
+      // formats. The truth table will grow exponentially. You'll need to add
+      // more restrictions on accepted pairs to overcome the combinatorial
+      // explosion.
+      if register == memory {
+        return true
+      } else if register == .FP32 {
+        return true
+      } else {
+        return false
+      }
+    }
+
+    guard checkOperandPair(
+      memory: memoryPrecisions.A, register: registerPrecisions.A) else {
+      fatalError("Operand A had an invalid register precision.")
+    }
+    guard checkOperandPair(
+      memory: memoryPrecisions.B, register: registerPrecisions.B) else {
+      fatalError("Operand B had an invalid register precision.")
+    }
+    guard checkOperandPair(
+      memory: memoryPrecisions.C, register: registerPrecisions.C) else {
+      fatalError("Operand C had an invalid register precision.")
+    }
+    if registerPrecisions.C == .BF16 {
+      // BF16 has too few mantissa bits to be an accurate accumulator. In
+      // addition, switching from FP32 accumulator to BF16 accumulator slows
+      // down execution speed on both M1/M2 and M3+.
+      fatalError("BF16 cannot be used as the register precision for C.")
+    }
+
+    // Retrieve the "padded" block dimensions, otherwise compute analytically
+    // from the true block dimensions.
+    func chooseLeadingBlockDimension(
+      specifiedLeading: UInt16?,
+      transposeState: Bool,
+      untransposedRows: UInt16,
+      untransposedColumns: UInt16
+    ) -> UInt16 {
+      var expectedLeading: UInt16
+      if transposeState {
+        expectedLeading = untransposedRows
+      } else {
+        expectedLeading = untransposedColumns
+      }
+
+      var actualLeading: UInt16
+      if let specifiedLeading {
+        guard specifiedLeading >= expectedLeading else {
+          fatalError("Leading block dimension was too small.")
+        }
+        actualLeading = specifiedLeading
+      } else {
+        actualLeading = expectedLeading
+      }
+
+      return actualLeading
+    }
+
+    // Pick the leading block dimensions.
+    leadingBlockDimensions = (.zero, .zero, .zero)
+    leadingBlockDimensions.A = chooseLeadingBlockDimension(
+      specifiedLeading: descriptor.leadingBlockDimensions?.A,
+      transposeState: transposeState.A,
+      untransposedRows: blockDimensions.M,
+      untransposedColumns: blockDimensions.K)
+    leadingBlockDimensions.B = chooseLeadingBlockDimension(
+      specifiedLeading: descriptor.leadingBlockDimensions?.B,
+      transposeState: transposeState.B,
+      untransposedRows: blockDimensions.K,
+      untransposedColumns: blockDimensions.N)
+    leadingBlockDimensions.C = chooseLeadingBlockDimension(
+      specifiedLeading: descriptor.leadingBlockDimensions?.C,
+      transposeState: false,
+      untransposedRows: blockDimensions.M,
+      untransposedColumns: blockDimensions.N)
+
+    // Pick the threadgroup memory allocation size.
+    threadgroupMemoryAllocation = .zero
+    threadgroupMemoryAllocation = createThreadgroupMemoryAllocation()
+  }
+}
+
+extension GEMMKernel {
+  func memoryName(_ operand: String) -> String {
+    switch operand {
+    case "A": return memoryPrecisions.A.name
+    case "B": return memoryPrecisions.B.name
+    case "C": return memoryPrecisions.C.name
+    default:
+      fatalError("Unrecognized operand.")
+    }
+  }
+
+  func registerName(_ operand: String) -> String {
+    switch operand {
+    case "A": return registerPrecisions.A.name
+    case "B": return registerPrecisions.B.name
+    case "C": return registerPrecisions.C.name
+    default:
+      fatalError("Unrecognized operand.")
+    }
+  }
+
+  func transposed(_ operand: String) -> Bool {
+    switch operand {
+    case "A": return transposeState.A
+    case "B": return transposeState.B
+    case "C": return false
+    default: fatalError("Unrecognized operand.")
+    }
+  }
+}
+
+extension GEMMKernel {
+  func leadingDimension(_ operand: String) -> String {
+    return "\(operand)_leading_dimension"
+  }
+
+  func leadingBlockDimension(_ operand: String) -> UInt16 {
+    switch operand {
+    case "A": return leadingBlockDimensions.A
+    case "B": return leadingBlockDimensions.B
+    case "C": return leadingBlockDimensions.C
+    default: fatalError("Unrecognized operand.")
+    }
+  }
+
+  func trailingBlockDimension(_ operand: String) -> UInt16 {
+    func chooseTrailingBlockDimension(
+      _ transposeState: Bool,
+      _ untransposedRows: UInt16,
+      _ untransposedColumns: UInt16
+    ) -> UInt16 {
+      if transposeState {
+        return untransposedColumns
+      } else {
+        return untransposedRows
+      }
+    }
+
+    switch operand {
+    case "A":
+      return chooseTrailingBlockDimension(
+        transposed("A"), blockDimensions.M, blockDimensions.K)
+    case "B":
+      return chooseTrailingBlockDimension(
+        transposed("B"), blockDimensions.K, blockDimensions.N)
+    case "C":
+      return chooseTrailingBlockDimension(
+        transposed("C"), blockDimensions.M, blockDimensions.N)
+    default:
+      fatalError("Unrecognized operand.")
+    }
+  }
+
+  func blockBytes(_ operand: String) -> UInt16 {
+    var output: UInt16 = 1
+    output *= leadingBlockDimension(operand)
+    output *= trailingBlockDimension(operand)
+
+    var memoryPrecision: GEMMOperandPrecision
+    switch operand {
+    case "A":
+      memoryPrecision = memoryPrecisions.A
+    case "B":
+      memoryPrecision = memoryPrecisions.B
+    case "C":
+      memoryPrecision = memoryPrecisions.C
+    default:
+      fatalError("Unrecognized operand.")
+    }
+    output *= UInt16(memoryPrecision.size)
+    return output
+  }
+}
+
+extension GEMMKernel {
+  var registerM: UInt16 {
+    blockDimensions.M / splits.M
+  }
+
+  var registerN: UInt16 {
+    blockDimensions.N / splits.N
+  }
+
+  public var threadgroupSize: UInt16 {
+    32 * splits.M * splits.N
+  }
+
+  private func createThreadgroupMemoryAllocation() -> UInt16 {
+    let blockBytesA = self.blockBytes("A")
+    let blockBytesB = self.blockBytes("B")
+    let blockBytesC = self.blockBytes("C")
+    return max(blockBytesA + blockBytesB, blockBytesC)
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMDescriptor/GEMMDescriptor+CoreCount.swift
+---
+//
+//  CoreCount.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+#if os(macOS)
+import IOKit
+
+/// Finds the core count on macOS devices, using IORegistry.
+///
+/// Source: [AppleGPUInfo](https://github.com/philipturner/applegpuinfo)
+///
+/// This code was generated by GPT-4 a few days after launch (early 2023).
+/// Since then, it has undergone extensive human review and real-world testing.
+/// It proved that proto-AGI could be a practically useful tool, in this case
+/// assisting with code creation.
+func findCoreCount() -> Int {
+  // Create a matching dictionary with "AGXAccelerator" class name
+  let matchingDict = IOServiceMatching("AGXAccelerator")
+
+  // Get an iterator for matching services
+  var iterator: io_iterator_t = 0
+  do {
+    let io_registry_error =
+    IOServiceGetMatchingServices(
+      kIOMainPortDefault, matchingDict, &iterator)
+    guard io_registry_error == 0 else {
+      fatalError(
+        "Encountered IORegistry error code \(io_registry_error)")
+    }
+  }
+
+  // Get the first (and only) GPU entry from the iterator
+  let gpuEntry = IOIteratorNext(iterator)
+
+  // Check if the entry is valid
+  if gpuEntry == MACH_PORT_NULL {
+    fatalError(
+      "Error getting GPU entry at \(#file):\(#line - 5)")
+  }
+
+  // Release the iterator
+  IOObjectRelease(iterator)
+
+  // Get the "gpu-core-count" property from gpuEntry
+  let key = "gpu-core-count"
+  let options: IOOptionBits = 0 // No options needed
+  let gpuCoreCount = IORegistryEntrySearchCFProperty(
+    gpuEntry, kIOServicePlane, key as CFString, nil, options)
+
+  // Check if the property is valid
+  if gpuCoreCount == nil {
+    fatalError(
+      "Error getting gpu-core-count property at \(#file):\(#line - 6)")
+  }
+
+  // Cast the property to CFNumberRef
+  let gpuCoreCountNumber = gpuCoreCount as! CFNumber
+
+  // Check if the number type is sInt64
+  let type = CFNumberGetType(gpuCoreCountNumber)
+  if type != .sInt64Type {
+    fatalError(
+      "Error: gpu-core-count is not sInt64 at \(#file):\(#line - 3)")
+  }
+
+  // Get the value of the number as Int64
+  var value: Int64 = 0
+  let result = CFNumberGetValue(gpuCoreCountNumber, type, &value)
+
+  // Check for errors
+  if result == false {
+    fatalError(
+      " Error getting value of gpu-core-count at \(#file):\(#line - 5)")
+  }
+
+  return Int(value)
+}
+#endif
+
+
+---
+FlashAttention/GEMM/GEMMDescriptor/GEMMDescriptor+PipelineCache.swift
+---
+//
+//  PipelineCache.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+import Metal
+
+extension GEMMKernel {
+  public typealias LibraryValue = (
+    kernel: GEMMKernel, library: MTLLibrary)
+  public typealias PipelineValue = (
+    kernel: GEMMKernel, pipeline: MTLComputePipelineState)
+
+  public static var libraryCache: [
+    GEMMKernelDescriptor: LibraryValue] = [:]
+  public static var pipelineCache: [
+    GEMMDescriptor: PipelineValue] = [:]
+}
+
+extension GEMMKernel {
+  // Register this problem configuration in the cache.
+  public static func register(descriptor: GEMMDescriptor) {
+    guard pipelineCache[descriptor] == nil else {
+      return
+    }
+
+    var kernelDescriptor = GEMMKernelDescriptor(descriptor: descriptor)
+
+    let device = MTLContext.global.device
+    if device.supportsFamily(.apple9) {
+      kernelDescriptor.preferAsyncStore = false
+    } else {
+      guard let blockDimensions = kernelDescriptor.blockDimensions else {
+        fatalError("Block dimensions were not set.")
+      }
+      if blockDimensions == (48, 48, 32) {
+        kernelDescriptor.preferAsyncStore = nil
+      } else {
+        kernelDescriptor.preferAsyncStore = true
+      }
+    }
+
+    func createLibrary(
+      _ kernelDescriptor: GEMMKernelDescriptor
+    ) -> LibraryValue {
+      if let output = GEMMKernel.libraryCache[kernelDescriptor] {
+        return output
+      } else {
+        let kernel = GEMMKernel(descriptor: kernelDescriptor)
+        let source = kernel.createSource()
+        let library = try! device.makeLibrary(source: source, options: nil)
+
+        let output = (kernel, library)
+        GEMMKernel.libraryCache[kernelDescriptor] = output
+        return output
+      }
+    }
+
+    func createPipeline(
+      _ libraryValue: LibraryValue
+    ) -> PipelineValue {
+      let constants = MTLFunctionConstantValues()
+      descriptor.setFunctionConstants(constants)
+
+      let library = libraryValue.library
+      let function = try! library.makeFunction(
+        name: "gemm", constantValues: constants)
+      let pipeline = try! device.makeComputePipelineState(
+        function: function)
+      return (libraryValue.kernel, pipeline)
+    }
+
+    if kernelDescriptor.preferAsyncStore == nil {
+      var candidates: [PipelineValue] = []
+      for candidateID in 0..<4 {
+        var blockDimensions: (M: UInt16, N: UInt16, K: UInt16)
+        var preferAsyncStore: Bool
+        switch candidateID {
+        case 0:
+          blockDimensions = (48, 48, 32)
+          preferAsyncStore = false
+        case 1:
+          blockDimensions = (48, 48, 40)
+          preferAsyncStore = false
+        case 2:
+          blockDimensions = (48, 48, 32)
+          preferAsyncStore = true
+        case 3:
+          blockDimensions = (48, 48, 40)
+          preferAsyncStore = true
+        default:
+          fatalError("This should never happen.")
+        }
+
+        // Set the attributes unique to this variant.
+        var modifiedKernelDescriptor = kernelDescriptor
+        modifiedKernelDescriptor.blockDimensions = blockDimensions
+        modifiedKernelDescriptor.preferAsyncStore = preferAsyncStore
+
+        let libraryValue = createLibrary(modifiedKernelDescriptor)
+        let pipelineValue = createPipeline(libraryValue)
+        candidates.append(pipelineValue)
+      }
+
+      // Find the maximum occupancy.
+      var maximumOccupancy: Int = -1
+      for candidate in candidates {
+        let pipeline = candidate.pipeline
+        let occupancy = pipeline.maxTotalThreadsPerThreadgroup
+        maximumOccupancy = max(maximumOccupancy, occupancy)
+      }
+      candidates.removeAll(where: {
+        $0.pipeline.maxTotalThreadsPerThreadgroup != maximumOccupancy
+      })
+
+      // Choose the highest-performing candidate.
+      GEMMKernel.pipelineCache[descriptor] = candidates.last!
+    } else {
+      let libraryValue = createLibrary(kernelDescriptor)
+      let pipelineValue = createPipeline(libraryValue)
+      GEMMKernel.pipelineCache[descriptor] = pipelineValue
+    }
+  }
+}
+
+
+---
+FlashAttention/GEMM/GEMMDescriptor/GEMMDescriptor.swift
+---
+//
+//  GEMMDescriptor.swift
+//  FlashAttention
+//
+//  Created by Philip Turner on 6/21/24.
+//
+
+import Metal
+
+/// A description of a dense matrix-matrix multiplication.
+public struct GEMMDescriptor {
+  /// The number of equally sized multiplications that run in parallel.
+  /// Batching is out of scope for the reference implementation. However, there
+  /// should be a guide for clients that wish to modify the shader, in ways
+  /// that increase the compute workload. For example, by batching the
+  /// multiplication of (sub)matrices located at arbitrary pointers in memory
+  /// (with potentially nonuniform stride or noncontiguous padding).
+  public var batchDimension: Int = 1
+
+  /// Optional. Custom leading dimensions.
+  public var leadingDimensions: (A: UInt32, B: UInt32, C: UInt32)?
+
+  public var loadPreviousC: Bool = false
+
+  /// The dimensions of the input and output matrices.
+  /// - Parameter M: Number of output columns.
+  /// - Parameter N: Number of output rows.
+  /// - Parameter K: Number of loop iterations for the dot products.
+  ///
+  /// For all practical purposes, one can assume matrix dimensions are 32-bit.
+  /// I use this quite often in other code. The pointers themselves are 64-bit,
+  /// but the offsets between different elements are 32-bit. With 4-byte words,
+  /// this scheme could access up to 16 GB of memory - larger than any array
+  /// in any reasonable application. Handling larger allocations likely
+  /// requires consideration of more failure points than just integer
+  /// overflows.
+  public var matrixDimensions: (M: UInt32, N: UInt32, K: UInt32)?
+
+  public var memoryPrecisions: (
+    A: GEMMOperandPrecision, B: GEMMOperandPrecision, C: GEMMOperandPrecision)?
+
+  public var transposeState: (A: Bool, B: Bool)?
+
+  public init() {
+
+  }
+}
+
+struct GEMMKey: Equatable, Hashable {
+  var batchDimension: Int
+  var loadPreviousC: UInt8
+  var matrixDimensions: SIMD3<UInt32>
+  var memoryPrecisions: SIMD3<UInt16>
+  var transposeState: SIMD2<UInt8>
+
+  init(copying source: GEMMDescriptor) {
+    batchDimension = source.batchDimension
+    loadPreviousC = GEMMKernelKey.createBoolean(source.loadPreviousC)
+    matrixDimensions = Self.createMatrixDimensions(source.matrixDimensions)
+    memoryPrecisions = GEMMKernelKey.createPrecisions(source.memoryPrecisions)
+    transposeState = GEMMKernelKey.createTransposeState(source.transposeState)
+  }
+
+  @_transparent // performance in -Ounchecked
+  static func createMatrixDimensions(
+    _ input: (UInt32, UInt32, UInt32)?
+  ) -> SIMD3<UInt32> {
+    if let input {
+      return SIMD3(input.0, input.1, input.2)
+    } else {
+      return SIMD3(repeating: .max)
+    }
+  }
+}
+
+extension GEMMDescriptor: Hashable, Equatable {
+  public static func == (
+    lhs: GEMMDescriptor,
+    rhs: GEMMDescriptor
+  ) -> Bool {
+    let lhsKey = GEMMKey(copying: lhs)
+    let rhsKey = GEMMKey(copying: rhs)
+    return lhsKey == rhsKey
+  }
+
+  public func hash(into hasher: inout Hasher) {
+    let key = GEMMKey(copying: self)
+    hasher.combine(key)
+  }
+}
+
+extension GEMMKernelDescriptor {
+  /// Initialize the kernel descriptor using another descriptor, which just
+  /// specifies the problem size. Then, forget the information about problem
+  /// size. It will not be needed until the very far future, when the user
+  /// retrieves a `MTLLibrary` from the cache and sets some Metal function
+  /// constants.
+  ///
+  /// One might initialize a `GEMMKernelDescriptor` this way whenever an
+  /// arbitrary matrix multiplication is requested. The generated descriptor
+  /// itself could be a key in the KV cache. With this shader cache design, you
+  /// must minimize the latency of actions like `MTLDevice` materialization and
+  /// core count queries.
+  ///
+  /// Acceptable latency: no more than 1 μs per invocation.
+  public init(descriptor: GEMMDescriptor) {
+    guard let matrixDimensions = descriptor.matrixDimensions,
+          let memoryPrecisions = descriptor.memoryPrecisions,
+          let transposeState = descriptor.transposeState else {
+      fatalError("Descriptor was incomplete.")
+    }
+
+    // Select the only GPU on an Apple silicon system.
+    //
+    // NOTE: To avoid potentially costly API calls, you may wish to cache the
+    // MTLDevice object or enter a previously created one. The core count
+    // could also be cached on macOS.
+    //
+    // Typical latency to initiate a Metal device, provided the function has
+    // been called numerous times prior:
+    // - macOS 14
+    //   - Swift debug mode,   Metal API validation on:  ≥33 μs
+    //   - Swift release mode, Metal API validation off: ≥38 μs
+    // - iOS 17
+    //   - Swift debug mode,   Metal API validation on:   ≥0 μs
+    //   - Swift release mode, Metal API validation off:  ≥0 μs
+    let mtlDevice = MTLContext.global.device
+
+    // Trim the device name to something easier to process.
+    //
+    // M1 Max: Apple M1 Max -> M1
+    // M4:     Apple M4 GPU -> M4
+    func createDeviceName() -> String {
+      let deviceName = mtlDevice.name
+      var splits = deviceName.split(separator: " ").map(String.init)
+      splits.removeAll(where: { $0.starts(with: "Apple") })
+      splits.removeAll(where: { $0.starts(with: "GPU") })
+
+      // Iterate over the space-separated words.
+      var matchingSplitIDs: [UInt32] = []
+      for splitID in splits.indices {
+        // Screen out obvious non-candidates.
+        let split = splits[splitID]
+        guard split.starts(with: "A") || split.starts(with: "M") else {
+          continue
+        }
+
+        // Extract the second character.
+        guard split.count > 1 else {
+          continue
+        }
+        let secondCharacterInt8 = split.utf8CString[1]
+        let secondCharacterUInt32 = UInt32(secondCharacterInt8)
+        let secondCharacterUnicode = Unicode.Scalar(secondCharacterUInt32)!
+        let secondCharacter = Character(secondCharacterUnicode)
+
+        // If the second character is numeric, the candidate passes.
+        if secondCharacter.isWholeNumber {
+          matchingSplitIDs.append(UInt32(splitID))
+        }
+      }
+      guard matchingSplitIDs.count == 1 else {
+        fatalError("Failed to locate device name.")
+      }
+
+      let splitID = matchingSplitIDs[0]
+      return splits[Int(splitID)]
+    }
+    let deviceName = createDeviceName()
+
+    // Find the core count.
+#if os(macOS)
+    // Typical latency to query IORegistry, provided the function has been
+    // called numerous times prior:
+    // - macOS 14
+    //   - Swift debug mode,   Metal API validation on:  ≥9 μs
+    //   - Swift release mode, Metal API validation off: ≥9 μs
+    let coreCount = findCoreCount()
+#elseif os(iOS)
+    var coreCount: Int
+    if deviceName.starts(with: "A") {
+      if mtlDevice.supportsFamily(.apple9) {
+        coreCount = 6
+      } else {
+        coreCount = 5
+      }
+    } else {
+      coreCount = 10
+    }
+#endif
+
+    // Select the register precisions.
+    var registerPrecisionA = memoryPrecisions.A
+    var registerPrecisionB = memoryPrecisions.B
+    var registerPrecisionC = GEMMOperandPrecision.FP32
+    if memoryPrecisions.A == .FP16,
+       memoryPrecisions.B == .FP16,
+       memoryPrecisions.C == .FP16 {
+      registerPrecisionC = GEMMOperandPrecision.FP16
+    }
+    if !mtlDevice.supportsFamily(.apple9) {
+      if memoryPrecisions.A == .BF16 {
+        registerPrecisionA = .FP32
+      }
+      if memoryPrecisions.B == .BF16 {
+        registerPrecisionB = .FP32
+      }
+    }
+
+    // Set the properties of the 'GEMMKernelDescriptor' object.
+    self.memoryPrecisions = memoryPrecisions
+    if mtlDevice.supportsFamily(.apple9) {
+      self.preferAsyncLoad = false
+    } else {
+      self.preferAsyncLoad = true
+    }
+    self.registerPrecisions = (
+      registerPrecisionA,
+      registerPrecisionB,
+      registerPrecisionC)
+    if !mtlDevice.supportsFamily(.apple9) {
+      self.splits = (2, 2)
+    } else {
+      self.splits = (1, 1)
+    }
+    self.transposeState = transposeState
+
+    // Set the properties that deal with block size.
+    setBlockDimensions(
+      mtlDevice: mtlDevice,
+      coreCount: coreCount,
+      matrixDimensions: matrixDimensions,
+      batchDimension: descriptor.batchDimension)
+  }
+
+  // Implementation of the block size selection heuristic.
+  //
+  // This function initializes the 'blockDimensions' and
+  // 'paddedBlockDimensions' properties.
+  private mutating func setBlockDimensions(
+    mtlDevice: MTLDevice,
+    coreCount: Int,
+    matrixDimensions: (M: UInt32, N: UInt32, K: UInt32),
+    batchDimension: Int
+  ) {
+    guard let memoryPrecisions,
+          let transposeState else {
+      fatalError("Some properties were not set.")
+    }
+    guard !mtlDevice.supportsFamily(.apple9) else {
+      self.blockDimensions = (32, 32, 8)
+      return
+    }
+
+    // Find the actual number of threadgroups, with a large block size.
+    func ceilDivide(_ target: UInt32, _ granularity: UInt16) -> UInt32 {
+      (target + UInt32(granularity) - 1) / UInt32(granularity)
+    }
+    var actualGroups: Int = 1
+    actualGroups *= Int(ceilDivide(matrixDimensions.M, 48))
+    actualGroups *= Int(ceilDivide(matrixDimensions.N, 48))
+    actualGroups *= Int(batchDimension)
+
+    // Does the kernel use 48x48x24xFP32 (9 KB) or 48x48x32xFP16/BF16 (6 KB)?
+    func requiresLargeAllocation(_ precision: GEMMOperandPrecision) -> Bool {
+      switch precision {
+      case .FP32: return true
+      case .FP16: return false
+      case .BF16: return false
+      }
+    }
+    var useLargeAllocation = false
+    if requiresLargeAllocation(memoryPrecisions.A) {
+      useLargeAllocation = true
+    }
+    if requiresLargeAllocation(memoryPrecisions.B) {
+      useLargeAllocation = true
+    }
+    if requiresLargeAllocation(memoryPrecisions.C) {
+      useLargeAllocation = true
+    }
+
+    // Branch on whether the allocation is large / target occupancy is low.
+    if useLargeAllocation {
+      let idealGroups = coreCount * 6
+      if actualGroups <= idealGroups {
+        blockDimensions = (32, 32, 32)
+      } else {
+        blockDimensions = (48, 48, 24)
+
+        // This is verified to be optimal for:
+        // - (memA, memB, memC) = (FP32, FP32, FP32)
+        // - (memA, memB, memC) = (FP16, FP16, FP32)
+        // - (memA, memB, memC) = (FP16, FP32, FP32)
+        // - (memA, memB, memC) = (FP16, FP32, FP16)
+        switch transposeState {
+        case (false, false):
+          // Mx(K), Kx(N), Mx(N)
+          leadingBlockDimensions = (24, 48, 48)
+        case (false, true):
+          // Mx(K), (K)xN, Mx(N)
+          let paddedBK = (memoryPrecisions.B == .FP32) ? UInt16(28) : 24
+          leadingBlockDimensions = (24, paddedBK, 48)
+        case (true, false):
+          // (M)xK, Kx(N), Mx(N)
+          let paddedAM = (memoryPrecisions.A == .FP32) ? UInt16(52) : 56
+          leadingBlockDimensions = (paddedAM, 48, 48)
+        case (true, true):
+          // (M)xK, (K)xN, Mx(N)
+          let paddedAM = (memoryPrecisions.A == .FP32) ? UInt16(52) : 56
+          leadingBlockDimensions = (paddedAM, 24, 48)
+        }
+      }
+    } else {
+      let idealGroups = coreCount * 9
+      if actualGroups <= idealGroups {
+        blockDimensions = (32, 32, 32)
+      } else {
+        blockDimensions = (48, 48, 32)
+      }
+    }
+  }
+}
+
+extension GEMMDescriptor {
+  // Specialize the Metal function with this GEMM descriptor.
+  func setFunctionConstants(_ constants: MTLFunctionConstantValues) {
+    guard let matrixDimensions = self.matrixDimensions,
+          let transposeState = self.transposeState else {
+      fatalError("Descriptor was incomplete.")
+    }
+
+    var M = matrixDimensions.M
+    var N = matrixDimensions.N
+    var K = matrixDimensions.K
+    constants.setConstantValue(&M, type: .uint, index: 0)
+    constants.setConstantValue(&N, type: .uint, index: 1)
+    constants.setConstantValue(&K, type: .uint, index: 2)
+
+    func chooseLeadingDimension(
+      _ specifiedLeading: UInt32?,
+      _ transposeState: Bool,
+      _ untransposedRows: UInt32,
+      _ untransposedColumns: UInt32
+    ) -> UInt32 {
+      var expectedLeading: UInt32
+      if transposeState {
+        expectedLeading = untransposedRows
+      } else {
+        expectedLeading = untransposedColumns
+      }
+
+      var actualLeading: UInt32
+      if let specifiedLeading {
+        guard specifiedLeading >= expectedLeading else {
+          fatalError("Leading block dimension was too small.")
+        }
+        actualLeading = specifiedLeading
+      } else {
+        actualLeading = expectedLeading
+      }
+
+      return actualLeading
+    }
+    var leadingDimensionA = chooseLeadingDimension(
+      leadingDimensions?.A, transposeState.A,
+      matrixDimensions.M, matrixDimensions.K)
+    var leadingDimensionB = chooseLeadingDimension(
+      leadingDimensions?.B, transposeState.B,
+      matrixDimensions.K, matrixDimensions.N)
+    var leadingDimensionC = chooseLeadingDimension(
+      leadingDimensions?.C, false,
+      matrixDimensions.M, matrixDimensions.N)
+    constants.setConstantValue(&leadingDimensionA, type: .uint, index: 5)
+    constants.setConstantValue(&leadingDimensionB, type: .uint, index: 6)
+    constants.setConstantValue(&leadingDimensionC, type: .uint, index: 7)
+
+    var loadPreviousC = self.loadPreviousC
+    constants.setConstantValue(&loadPreviousC, type: .bool, index: 10)
+  }
+}
+
+
+---
+../README.md
+---
+# FlashAttention (Metal Port)
+
+This repository ports the official implementation of [FlashAttention](https://github.com/Dao-AILab/flash-attention) to Apple silicon. It is a minimal, maintainable set of source files that reproduces the FlashAttention algorithm.
+
+## Documentation
+
+Single-headed attention only, to focus on the core bottlenecks of different attention algorithms (register pressure, parallelism). With the basic algorithm done correctly, it should be comparatively trivial to add customizations like block sparsity.
+
+Everything is JIT compiled at runtime. This contrasts with the previous implementation, which relied on an executable embedded in Xcode 14.2.
+
+The backward pass uses less memory than [Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention). The official implementation allocates scratch space for atomics and partial sums. Apple hardware lacks native FP32 atomics (`metal::atomic<float>` is emulated). While attempting to circumvent the lack of hardware support, bandwidth and parallelization bottlenecks in the FlashAttention-2 backward kernel were revealed. An alternative backward pass was designed with higher compute cost (7 GEMMs instead of 5 GEMMs). It achieves 100% parallelization efficiency across both the row and column dimensions of the attention matrix. Most importantly, it is easier to code and maintain.
+
+A lot of crazy stuff was done to overcome register pressure bottlenecks. At large head dimensions (e.g. 256), none of the matrix blocks can fit into registers. Not even the accumulator can. Therefore, intentional register spilling is done, but in a more optimized way. A third block dimension was added to the attention algorithm, which blocks along `D`. The aspect ratio of attention matrix blocks was warped heavily, to minimize the bandwidth cost of register spilling. For example, 16-32 along the parallelization dimension and 80-128 along the traversal dimension. There is a large parameter file that takes the `D` dimension, and determines which operands can fit into registers. It then assigns a block size that balances many competing bottlenecks.
+
+The end result is a consistent 4400 gigainstructions per second on M1 Max (83% ALU utilization), at infinite sequence length and infinite head dimension. Provided BF16 emulation is being used for mixed precision (Metal's `bfloat` has IEEE-compliant rounding, a major overhead on older chips without hardware BF16).
+
+![M1_Max_Image.png](./Documentation/M1_Max_Image.png)
+
+![M4_Image.png](./Documentation/M4_Image.png)
+
+Raw Data: https://docs.google.com/spreadsheets/d/1Xf4jrJ7e19I32J1IWIekGE9uMFTeZKoOpQ6hlUoh-xY/edit?usp=sharing
+
+## Quantifying Performance
+
+In the AI field, performance is most often reported in giga-floating point operations per second (GFLOPS). This metric reflects a simplified model of performance, that every instruction occurs in GEMM. As hardware has advanced from early FPUs to modern vector processors, the most common floating-point operations were fused into a single instruction. Fused multiply-add (FMA). When one multiplies two 100x100 matrices, 1 million FMA instructions are issued. Why must we treat this FMA as two separate instructions?
+
+This question is relevant to attention, where not all floating point operations are created equal. The exponentiation during softmax occurs in a single clock cycle, granted that most of the other instructions go to the FMA unit. Some of the multiplies and adds during softmax, cannot be fused with a nearby add or multiply. Should we treat these the same as FMA, and pretend the hardware is just executing the FMA two times slower? It is unclear how the GEMM performance model can explain whether my shader is using the ALU hardware effectively.
+
+Instead of gigaflops, I use gigainstructions to understand how well the shader is performing. It maps more directly to the algorithm. For example, one GEMM is `N^3` FMA instructions. Forward attention performs two matrix multiplies, or `2 * D * N^2` FMA instructions. Backward attention (by the [Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention) implementation) is `5 * D * N^2` FMA instructions. Try comparing this table to roofline models in the Flash1, Flash2, or Flash3 papers.
+
+| Operation   | Work |
+| :---------- | ---: |
+| Square GEMM | `N^3`  |
+| Forward Attention | `(2D + 5) * N^2` |
+| Backward Naive Attention | `4D * N^2` |
+| Backward FlashAttention | `(5D + 5) * N^2` |
+| FWD + BWD Combined | `(7D + 10) * N^2` |
+
+Due to the complexity of FP32 atomics, MFA used a different approach for backward pass. This one has higher compute cost. It splits the backward pass into two separate kernels: `dQ` and `dK/dV`. A dropdown shows the pseudocode. Compare this to one of the algorithms in the Flash1, Flash2, or Flash3 papers.
+
+| Operation   | Work |
+| :---------- | ---: |
+| Forward | `(2D + 5) * N^2` |
+| Backward dQ | `(3D + 5) * N^2` |
+| Backward dK/dV | `(4D + 5) * N^2` |
+| FWD + BWD Combined | `(9D + 15) * N^2` |
+
+<details>
+<summary>Algorithm Pseudocode</summary>
+
+```swift
+// Forward
+//   for c in 0..<C {
+//     load K[c]
+//     S = Q * K^T
+//     (m, l, P) = softmax(m, l, S * scaleFactor)
+//
+//     O *= correction
+//     load V[c]
+//     O += P * V
+//   }
+//   O /= l
+//
+//   L = m + logBaseE(l)
+//
+// Backward Query
+//   D = dO * O
+//
+//   for c in 0..<C {
+//     load K[c]
+//     S = Q * K^T
+//     P = exp(S - L)
+//
+//     load V[c]
+//     dP = dO * V^T
+//     dS = P * (dP - D) * scaleFactor
+//
+//     load K[c]
+//     dQ += dS * K
+//   }
+//
+// Backward Key-Value
+//   for r in 0..<R {
+//     load Q[r]
+//     load L[r]
+//     S^T = K * Q^T
+//     P^T = exp(S^T - L)
+//
+//     load dO[r]
+//     dV += P^T * dO
+//
+//     load dO[r]
+//     load D[r]
+//     dP^T = V * dO^T
+//     dS^T = P^T * (dP^T - D) * scaleFactor
+//
+//     load Q[r]
+//     dK += dS^T * Q
+//   }
+```
+
+</details>
+
+Performance is measured by calculating the amount of compute work, then dividing by seconds. The end result is "gigainstructions per second". Next, we need a roofline model. The table below shows rooflines for GINSTRS, calculated as half of GFLOPS. ALU utilization is (actual gigainstructions per second) / (expected gigainstructions per second). For example, M1 Max typically achieves 80% ALU utilization with mixed precision.
+
+There are limits to this model. It breaks down with the M3 generation at small head dimensions. Different compute units might be utilized simultaneously, making the apparent utilization over 100%. For the most part, the benchmark provides an accurate model of how much performance is left on the table.
+
+```swift
+var operations: Int
+switch benchmarkedKernel {
+case .forward:
+  operations = 2 * headDimension + 5
+case .backwardQuery:
+  operations = 3 * headDimension + 5
+case .backwardKeyValue:
+  operations = 4 * headDimension + 5
+}
+operations *= (sequenceDimension * sequenceDimension)
+operations *= dispatchCount
+
+// Divide the work by the latency, resulting in throughput.
+let instrs = Double(operations) / Double(latencySeconds)
+let ginstrs = Int(instrs / 1e9)
+```
+
+| Hardware | GFLOPS | GINSTRS |
+| :------- | -----: | ------: |
+| M1 Max   | 10616  | 5308    |
+| M4       | 3580   | 1790    |
+
+How well does the Metal port compare to the official FlashAttention repository? Imagine I went with the "atomic dQ" algorithm and achieved 100% performance. Then, switched to the actual MFA repo and found model training to be 4x slower. That would be 25% of the roofline from the official repository. To get this percentage, multiply the average ALU utilization across all three kernels by `7 / 9`. A more nuanced model was used for the statistics on Apple hardware, but this is the gist of it.
+
+To calculate utilization of Nvidia hardware, I used GFLOPS for FP16/BF16 ALUs. I divided the highest GFLOPS from each graph in the paper by 312000 (A100 SXM), 989000 (H100 SXM). Notice that, for larger head dimensions and register intensive kernels (backward pass), no benchmarks were reported. I confirmed they did not solve the register pressure issue at infinite head dimensions. For example, the accumulator is always held in registers. At the time of writing, I had not seen concrete evidence of D=256 backward gradient executing with correct results.
+
+### GFLOPS
+
+| A100, Flash2, FP16 | D = 64  | D = 128 | D = 256 |
+| :----------------- | ------: | ------: | ------: |
+| Forward            | 192000  | 223000  | 0       |
+| Backward           | 170000  | 196000  | 0       |
+| Forward + Backward | 176000  | 203000  | 0       |
+
+| H100, Flash3, FP16 | D = 64  | D = 128 | D = 256 |
+| :----------------- | ------: | ------: | ------: |
+| Forward            | 497000  | 648000  | 756000  |
+| Backward           | 474000  | 561000  | 0       |
+| Forward + Backward | 480000  | 585000  | 0       |
+
+| H100, Flash3, FP8  | D = 64  | D = 128 | D = 256 |
+| :----------------- | ------: | ------: | ------: |
+| Forward            | 613000  | 1008000 | 1171000 |
+| Backward           | 0       | 0       | 0       |
+| Forward + Backward | 0       | 0       | 0       |
+
+### Compute Utilization
+
+| A100, Flash2, FP16 | D = 64  | D = 128 | D = 256 |
+| :----------------- | ------: | ------: | ------: |
+| Forward            | 62%     | 71%     | 0%      |
+| Forward + Backward | 56%     | 65%     | 0%      |
+
+| H100, Flash3, FP16 | D = 64  | D = 128 | D = 256 |
+| :----------------- | ------: | ------: | ------: |
+| Forward            | 50%     | 66%     | 76%     |
+| Forward + Backward | 48%     | 59%     | 0%      |
+
+| M1 Architecture, FP16 | D = 64  | D = 128 | D = 256 |
+| :-------------------- | ------: | ------: | ------: |
+| Forward               | 86%     | 85%     | 86%     |
+| Forward + Backward    | 62%     | 63%     | 64%     |
+
+| M3 Architecture, FP16 | D = 64  | D = 128 | D = 256 |
+| :-------------------- | ------: | ------: | ------: |
+| Forward               | 94%     | 91%     | 82%     |
+| Forward + Backward    | 71%     | 69%     | 61%     |
+
+### Side by Side
+
+| Hardware Produced in 2020 | D = 64  | D = 128 | D = 256 |
+| :------------------------ | ------: | ------: | ------: |
+| A100                      | 56%     | 65%     | 0%      |
+| M1&mdash;M2 Architecture  | 62%     | 63%     | 64%     |
+
+| Hardware Produced in 2023 | D = 64  | D = 128 | D = 256 |
+| :------------------------ | ------: | ------: | ------: |
+| H100 (using FP8 GFLOPS)   | 24%     | 30%     | 0%      |
+| H100 (using FP16 GFLOPS)  | 48%     | 59%     | 0%      |
+| M3&mdash;M4 Architecture  | 71%     | 69%     | 61%     |
+
+Despite issuing more computations, Apple hardware is training transformers <b>faster than Nvidia hardware doing the same work</b>. Normalizing for the difference in size between different GPUs. Just focusing on how efficiently the GPU is utilized.
+
+Perhaps the main repository should try the algorithm that avoids FP32 atomics and deliberately spills registers when they cannot fit in the GPU core. This seems unlikely, as they have hard-coded support for a small subset of the possible problem sizes. The motivation seems to be supporting the most common models, where `D` is a power of 2, and less than 128. For anything else, users need to rely on alternative fallback implementations (e.g. the MFA repository), which might use a completely different underlying algorithm.
+
+## Usage
+
+### Setting Up Workflow
+
+On macOS, download the Swift package and compile with `-Xswiftc -Ounchecked`. This compiler option is needed for performance-sensitive CPU code. Release mode cannot be used because it forces the entire codebase to be recompiled from scratch, every time there is a single change. Navigate to the Git repo in Finder and double-click `Package.swift`. An Xcode window should pop up. On the left, there should be a hierarchy of files. If you cannot unravel the hierarchy, something went wrong.
+
+```
+git clone https://github.com/philipturner/metal-flash-attention
+swift build -Xswiftc -Ounchecked # Does it even compile?
+swift test -Xswiftc -Ounchecked # Does the test suite finish in ~10 seconds?
+```
+
+Alternatively, create a new Xcode project with the SwiftUI template. Override the `"Hello, world!"` string with a call to a function that returns a `String`. This function will execute the script of your choosing, then call `exit(0)`, so the app crashes before rendering anything to the screen. You will use the output in the Xcode console as feedback about your code. This workflow is compatible with both macOS and iOS.
+
+Add the `-Xswiftc -Ounchecked` option through <b>Project</b> > your project's name > <b>Build Settings</b> > <b>Swift Compiler - Code Generation</b> > <b>Optimization Level</b>. The second column of the table lists your project's name. Click <b>Other</b> in the dropdown and type `-Ounchecked` in the panel that appears. Next, add this repository as a Swift package dependency. Look through some of the tests under `Tests/FlashAttention`. Copy the raw source code for one of these tests into your project. Invoke the test from the function in the previous paragraph. Examine what it displays on the console.
+
+To modify the Metal code generation (e.g. add multi-head or mask support), copy the raw Swift code into your Xcode project. Either use `git clone` in a separate folder, or download the raw files on GitHub as a ZIP. There is also a way to link to your fork of `metal-flash-attention` and autosave your changes to the cloud, but this is more difficult to set up. Remove the Swift package dependency from the previous paragraph. Re-run the test of your choosing. Does it compile and display something in the console?
+
+### Editing Source Code
+
+Locate one of the multi-line string literals in either of these folders:
+
+```
+Sources/FlashAttention/Attention/AttentionKernel
+Sources/FlashAttention/GEMM/GEMMKernel
+```
+
+Add random text to one of them. Compile and run the project again. Something should go terribly wrong. For example, the Metal compiler may throw an error. If this does not happen, try messing up a different line of code somewhere else. If the test still passes, Xcode is not registering your changes.
+
+Proceed with coding up [block sparsity](https://pytorch.org/blog/flexattention/) or something. Get feedback about whether the code works at all, whether it works fast, whether it works fast at every problem size. Integrate the raw source code into your app, or translate it to another programming language.
+
+
+---
