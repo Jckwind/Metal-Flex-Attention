@@ -49,7 +49,7 @@ from typing import Callable
 
 @mx.compile
 def matmul_spec(a: mx.array, b: mx.array):
-    return mx.matmul(a, b)
+    return mx.matmul(a,b)
 
 @mx.compile
 def matmul_kernel(
@@ -67,14 +67,14 @@ def matmul_kernel(
     ashape0 = a.shape[0]
     ashape1 = a.shape[1]
     bshape0 = b.shape[0]
-    bshape1 = b.shape[0]
+    bshape1 = b.shape[1]
     assert ashape1 == bshape0, f"Inner dimensions must match: ashape1={ashape1}, bshape0={bshape0}"
     
     print(f"[DEBUG] Transposition: A_trans={A_trans}, B_trans={B_trans}")
     print(f"[DEBUG] Input dtypes: a.dtype={a.dtype}, b.dtype={b.dtype}")
 
     # Define block size (tile size)
-    BLOCK_SIZE = 8  # Adjust based on hardware capabilities
+    BLOCK_SIZE = 8  # Ensure consistency with tests
     DEPTH_SIZE = 8  # New dimension for 3D tiling
 
     # Kernel header
@@ -143,15 +143,6 @@ def matmul_kernel(
                 Bsub[d][tid_x][tid_y] = 0.0;
             }}   
 
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // Swap buffers for asynchronous transfer
-            for (uint x = 0; x < BLOCK_SIZE; ++x) {{
-                for (uint y = 0; y < BLOCK_SIZE; ++y) {{
-                    Asub[d][x][y] = Asub[d][x][y];
-                    Bsub[d][x][y] = Bsub[d][x][y];
-                }}
-            }}
         }}
 
         // Synchronize to ensure all tiles are loaded
@@ -161,9 +152,6 @@ def matmul_kernel(
         for (uint d = 0; d < DEPTH_SIZE; ++d) {{
             sum += Asub[d][tid_y][tid_x] * Bsub[d][tid_y][tid_x];
         }}
-
-        // Synchronize before loading the next set of tiles
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
     // Write the result to C
@@ -186,7 +174,7 @@ def matmul_kernel(
     grid_x = (bshape1 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
     grid_y = (ashape0 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
     grid = (grid_x, grid_y, 1)
-    threadgroup = (BLOCK_SIZE, BLOCK_SIZE, 1)
+    threadgroup = (BLOCK_SIZE, BLOCK_SIZE, 3)
     print(f"[DEBUG] Grid dimensions: grid_x={grid_x}, grid_y={grid_y}")
     
     # Execute the kernel and return the result
