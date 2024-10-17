@@ -47,23 +47,35 @@ from typing import Callable
 #   )
 ###
 
+@mx.compile
 def matmul_spec(a: mx.array, b: mx.array):
     return mx.matmul(a, b)
 
+@mx.compile
 def matmul_kernel(
     a: mx.array,
     b: mx.array,
-    M_group=16,
-    N_group=16,
-    K_group=16,
-    K_tile=8,
+    A_trans: bool,
+    B_trans: bool,
 ):
-    # Matrix dimensions
-    M = a.shape[0]
-    K = a.shape[1]
-    N = b.shape[1]
+    """
+    Custom Metal kernel for matrix multiplication using MLX's metal_kernel API.
+    """
+    print("[DEBUG] Entering matmul_kernel function")
+    
+    # Validate input dimensions
+    ashape0 = a.shape[0]
+    ashape1 = a.shape[1]
+    bshape0 = b.shape[0]
+    bshape1 = b.shape[0]
+    assert ashape1 == bshape0, f"Inner dimensions must match: ashape1={ashape1}, bshape0={bshape0}"
+    
+    print(f"[DEBUG] Transposition: A_trans={A_trans}, B_trans={B_trans}")
+    print(f"[DEBUG] Input dtypes: a.dtype={a.dtype}, b.dtype={b.dtype}")
 
-    print(f"Matrix dimensions: M={M}, K={K}, N={N}")
+    # Define block size (tile size)
+    BLOCK_SIZE = 8  # Adjust based on hardware capabilities
+    DEPTH_SIZE = 8  # New dimension for 3D tiling
 
     # Kernel header
     header = """
@@ -71,78 +83,96 @@ def matmul_kernel(
     using namespace metal;
     """
 
-    # Modified kernel source
+    print("[DEBUG] Defining kernel source with 3D tiling")
+    # Updated kernel source code with 3D tiling
     source = f"""
-    constexpr int M_GROUP = {M_group};
-    constexpr int N_GROUP = {N_group};
-    constexpr int K_TILE  = {K_tile};
-    constexpr bool A_TRANS = {A_trans_str};
-    constexpr bool B_TRANS = {B_trans_str};
+    uint gid_x = thread_position_in_grid.x;
+    uint gid_y = thread_position_in_grid.y;
+    uint gid_z = thread_position_in_grid.z; // Added z-axis for 3D tiling
 
-    constexpr int M = {M};
-    constexpr int N = {N};
-    constexpr int K = {K};
+    uint tid_x = thread_position_in_threadgroup.x;
+    uint tid_y = thread_position_in_threadgroup.y;
+    uint tid_z = thread_position_in_threadgroup.z; // Added z-axis for 3D tiling
 
-    // Thread and threadgroup indices
-    int gid_x = threadgroup_position_in_grid.x;
-    int gid_y = threadgroup_position_in_grid.y;
-    int lid_x = thread_position_in_threadgroup.x;
-    int lid_y = thread_position_in_threadgroup.y;
+    uint i = gid_x;
+    uint j = gid_y;
+    uint z = gid_z;
 
-    // Global indices
-    int global_row = gid_y * M_GROUP + lid_y;
-    int global_col = gid_x * N_GROUP + lid_x;
+    const uint BLOCK_SIZE = {BLOCK_SIZE};
+    const uint DEPTH_SIZE = {DEPTH_SIZE};
 
-    // Shared memory for tiles
-    threadgroup float A_shared[M_GROUP][K_TILE];
-    threadgroup float B_shared[K_TILE][N_GROUP];
+    // Shared memory allocations for 3D tiling
+    threadgroup float Asub[DEPTH_SIZE][BLOCK_SIZE][BLOCK_SIZE];
+    threadgroup float Bsub[DEPTH_SIZE][BLOCK_SIZE][BLOCK_SIZE];
 
-    // Pre-calculate number of tiles
-    int num_tiles = (K + K_TILE - 1) / K_TILE;
+    float sum = 0.0;
 
-    float C_value = 0.0;
+    const uint a_shape0 = {ashape0};
+    const uint a_shape1 = {ashape1};
+    const uint b_shape0 = {bshape0};
+    const uint b_shape1 = {bshape1};
+    const bool A_TRANS = {'true' if A_trans else 'false'};
+    const bool B_TRANS = {'true' if B_trans else 'false'};
 
-    for (int k_base = 0; k_base < K; k_base += K_GROUP) {{
-        for (int k_offset = 0; k_offset < K_GROUP; k_offset += K_TILE) {{
-            int next_buffer = 1 - current_buffer;
+    // Calculate the number of tiles in each dimension
+    uint tiles_x = (a_shape0 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
+    uint tiles_y = (b_shape1 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
+    uint tiles_z = (a_shape1 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
 
-            // Load data into next_buffer
-            // Synchronize before loading
+    for (uint tile = 0; tile < tiles_z; ++tile) {{
+        uint current_depth = tile * DEPTH_SIZE;
+
+        for (uint d = 0; d < DEPTH_SIZE; ++d) {{
+            if (current_depth + d < a_shape1) {{
+                // Load a tile of A into shared memory
+                uint a_col = current_depth + d;
+                if (i < a_shape0 && a_col < a_shape1) {{
+                    Asub[d][tid_y][tid_x] = A_TRANS ? a[a_col * a_shape0 + i] : a[i * a_shape1 + a_col];
+                }} else {{
+                    Asub[d][tid_y][tid_x] = 0.0;
+                }}
+
+                // Load a tile of B into shared memory
+                uint b_row = current_depth + d;
+                if (b_row < b_shape0 && j < b_shape1) {{
+                    Bsub[d][tid_y][tid_x] = B_TRANS ? b[j * b_shape0 + b_row] : b[b_row * b_shape1 + j];
+                }} else {{
+                    Bsub[d][tid_y][tid_x] = 0.0;
+                }}
+            }} else {{
+                Bsub[d][tid_x][tid_y] = 0.0;
+            }}   
+
             threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            // Load A_tile
-            int k = k_base + k_offset + lid_x;
-            if (global_row < M && k < K) {{
-                A_shared[next_buffer][lid_y][lid_x] = a[global_row * K + k];
-            }} else {{
-                A_shared[next_buffer][lid_y][lid_x] = 0.0;
+            // Swap buffers for asynchronous transfer
+            for (uint x = 0; x < BLOCK_SIZE; ++x) {{
+                for (uint y = 0; y < BLOCK_SIZE; ++y) {{
+                    Asub[d][x][y] = Asub[d][x][y];
+                    Bsub[d][x][y] = Bsub[d][x][y];
+                }}
             }}
-
-            // Load B_tile
-            if (k < K && global_col < N) {{
-                B_shared[next_buffer][lid_x][lid_y] = b[k * N + global_col];
-            }} else {{
-                B_shared[next_buffer][lid_x][lid_y] = 0.0;
-            }}
-
-        // Synchronize to make sure the tile is loaded
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Compute the partial product
-        for (int k = 0; k < K_TILE; ++k) {{
-            C_value += A_shared[lid_y][k] * B_shared[k][lid_x];
         }}
 
-        // Synchronize before loading the next tile
+        // Synchronize to ensure all tiles are loaded
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Perform multiplication for each depth slice
+        for (uint d = 0; d < DEPTH_SIZE; ++d) {{
+            sum += Asub[d][tid_y][tid_x] * Bsub[d][tid_y][tid_x];
+        }}
+
+        // Synchronize before loading the next set of tiles
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
-    // Write the result to global memory
-    if (global_row < M && global_col < N) {{
-        C[global_row * N + global_col] = C_value;
+    // Write the result to C
+    if (i < a_shape0 && j < b_shape1) {{
+        C[i * b_shape1 + j + z] = sum;
     }}
     """
-
+    
+    print("[DEBUG] Creating metal_kernel")
     kernel = mx.fast.metal_kernel(
         name="matmul_kernel",
         input_names=["a", "b"],
@@ -152,24 +182,35 @@ def matmul_kernel(
         ensure_row_contiguous=True,
     )
 
-    # Calculate grid dimensions
-    grid_x = (N + N_group - 1) // N_group
-    grid_y = (M + M_group - 1) // M_group
-
+    # Set grid and threadgroup sizes
+    grid_x = (bshape1 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
+    grid_y = (ashape0 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
+    grid = (grid_x, grid_y, 1)
+    threadgroup = (BLOCK_SIZE, BLOCK_SIZE, 1)
+    print(f"[DEBUG] Grid dimensions: grid_x={grid_x}, grid_y={grid_y}")
+    
     # Execute the kernel and return the result
     try:
-        assert a.dtype == b.dtype
-        assert isinstance(kernel, Callable)
+        print("[DEBUG] Asserting input dtypes")
+        assert a.dtype == b.dtype, f"Input dtypes do not match: a.dtype={a.dtype}, b.dtype={b.dtype}"
+        assert isinstance(kernel, Callable), "Kernel is not callable"
+        
+        print("[DEBUG] Executing kernel")
         outputs = kernel(
             inputs=[a, b],
             template=[("T", a.dtype)],
-            grid=(grid_x, grid_y, 1),
-            threadgroup=(N_group, M_group, 1),
-            output_shapes=[(M, N)],
+            grid=grid,
+            threadgroup=threadgroup,
+            output_shapes=[(ashape0, bshape1)],
             output_dtypes=[a.dtype],
+            verbose=False,  # Set to True to print the generated Metal code
         )
-        print("Metal kernel execution completed.")
-        return outputs[0]
+        print("[DEBUG] Metal kernel execution completed successfully")
+        C = outputs[0]
+        return C
     except Exception as e:
         print(f"[ERROR] Kernel execution failed: {e}")
+        print(f"[DEBUG] Error details: {type(e).__name__}: {str(e)}")
         raise
+
+print("[DEBUG] matmul_kernel function defined")
