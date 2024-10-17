@@ -74,7 +74,7 @@ def matmul_kernel(
     print(f"[DEBUG] Input dtypes: a.dtype={a.dtype}, b.dtype={b.dtype}")
 
     # Define block size (tile size)
-    BLOCK_SIZE = 8  # Ensure consistency with tests
+    THREADGROUP_MEM_SIZE = 3  # Ensure consistency with tests
     DEPTH_SIZE = 8  # New dimension for 3D tiling
 
     # Kernel header
@@ -98,12 +98,12 @@ def matmul_kernel(
     uint j = gid_y;
     uint z = gid_z;
 
-    const uint BLOCK_SIZE = {BLOCK_SIZE};
+    const uint THREADGROUP_MEM_SIZE = {THREADGROUP_MEM_SIZE};
     const uint DEPTH_SIZE = {DEPTH_SIZE};
 
     // Shared memory allocations for 3D tiling
-    threadgroup float Asub[DEPTH_SIZE][BLOCK_SIZE][BLOCK_SIZE];
-    threadgroup float Bsub[DEPTH_SIZE][BLOCK_SIZE][BLOCK_SIZE];
+    threadgroup float Asub[DEPTH_SIZE][THREADGROUP_MEM_SIZE][THREADGROUP_MEM_SIZE];
+    threadgroup float Bsub[DEPTH_SIZE][THREADGROUP_MEM_SIZE][THREADGROUP_MEM_SIZE];
 
     float sum = 0.0;
 
@@ -115,9 +115,9 @@ def matmul_kernel(
     const bool B_TRANS = {'true' if B_trans else 'false'};
 
     // Calculate the number of tiles in each dimension
-    uint tiles_x = (a_shape0 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
-    uint tiles_y = (b_shape1 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
-    uint tiles_z = (a_shape1 + DEPTH_SIZE * BLOCK_SIZE - 1) / (DEPTH_SIZE * BLOCK_SIZE);
+    uint tiles_x = (a_shape0 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
+    uint tiles_y = (b_shape1 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
+    uint tiles_z = (a_shape1 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
 
     for (uint tile = 0; tile < tiles_z; ++tile) {{
         uint current_depth = tile * DEPTH_SIZE;
@@ -171,10 +171,10 @@ def matmul_kernel(
     )
 
     # Set grid and threadgroup sizes
-    grid_x = (bshape1 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
-    grid_y = (ashape0 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE
+    grid_x = (bshape1 + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+    grid_y = (ashape0 + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
     grid = (grid_x, grid_y, 1)
-    threadgroup = (BLOCK_SIZE, BLOCK_SIZE, 3)
+    threadgroup = (THREADGROUP_MEM_SIZE, THREADGROUP_MEM_SIZE, 3)
     print(f"[DEBUG] Grid dimensions: grid_x={grid_x}, grid_y={grid_y}")
     
     # Execute the kernel and return the result
