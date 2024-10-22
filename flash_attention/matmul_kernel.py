@@ -48,8 +48,184 @@ from typing import Callable
 ###
 
 @mx.compile
-def matmul_spec(a: mx.array, b: mx.array):
-    return mx.matmul(a,b)
+def matmul_spec(a: mx.array, b: mx.array, A_trans: bool, B_trans: bool):
+    if A_trans:
+        a = mx.transpose(a)
+    if B_trans:
+        b = mx.transpose(b)
+    return mx.matmul(a, b)
+
+# @mx.compile
+# def matmul_kernel(
+#     a: mx.array,
+#     b: mx.array,
+#     A_trans: bool,
+#     B_trans: bool,
+# ):
+#     """
+#     Custom Metal kernel for matrix multiplication using MLX's metal_kernel API.
+#     """
+#     print("[DEBUG] Entering matmul_kernel function")
+    
+#     # Validate input dimensions
+#     if A_trans:
+#         M = a.shape[1]
+#         K = a.shape[0]
+#     else:
+#         M = a.shape[0]
+#         K = a.shape[1]
+
+#     if B_trans:
+#         N = b.shape[0]
+#         Kb = b.shape[1]
+#     else:
+#         N = b.shape[1]
+#         Kb = b.shape[0]
+    
+#     assert K == Kb, f"Inner dimensions must match: K={K}, Kb={Kb}"
+    
+#     print(f"[DEBUG] Transposition: A_trans={A_trans}, B_trans={B_trans}")
+#     print(f"[DEBUG] Input dtypes: a.dtype={a.dtype}, b.dtype={b.dtype}")
+    
+#     # Ensure we use float32 for atomic operations
+#     if a.dtype != mx.float32 or b.dtype != mx.float32:
+#         raise ValueError("Atomic operations require float32 data type.")
+    
+#     # Define block size (tile size)
+#     THREADGROUP_MEM_SIZE = 8
+#     DEPTH_SIZE = 8
+    
+#     # Kernel header
+#     header = """
+#     #include <metal_stdlib>
+#     using namespace metal;
+#     """
+    
+#     print("[DEBUG] Defining kernel source with conditional indexing")
+#     source = f"""
+#     uint gid_x = thread_position_in_grid.x;
+#     uint gid_y = thread_position_in_grid.y;
+
+#     uint tid_x = thread_position_in_threadgroup.x;
+#     uint tid_y = thread_position_in_threadgroup.y;
+
+#     uint i = gid_x;  // Row index
+#     uint j = gid_y;  // Column index
+
+#     const uint THREADGROUP_MEM_SIZE = {THREADGROUP_MEM_SIZE};
+#     const uint DEPTH_SIZE = {DEPTH_SIZE};
+
+#     threadgroup float Asub[THREADGROUP_MEM_SIZE][DEPTH_SIZE];
+#     threadgroup float Bsub[DEPTH_SIZE][THREADGROUP_MEM_SIZE];
+
+#     float sum = 0.0;
+
+#     const uint M = {M};
+#     const uint N = {N};
+#     const uint K = {K};
+
+#     const bool A_TRANS = {'true' if A_trans else 'false'};
+#     const bool B_TRANS = {'true' if B_trans else 'false'};
+
+#     // Calculate the number of tiles
+#     uint num_tiles = (K + DEPTH_SIZE - 1) / DEPTH_SIZE;
+
+#     for (uint tile = 0; tile < num_tiles; ++tile) {{
+#         uint current_k = tile * DEPTH_SIZE;
+
+#         // Load A sub-matrix into shared memory
+#         if (i < M && current_k + tid_y < K) {{
+#             uint a_index;
+#             if (A_TRANS) {{
+#                 a_index = (current_k + tid_y) * M + i;
+#             }} else {{
+#                 a_index = i * K + (current_k + tid_y);
+#             }}
+#             Asub[tid_x][tid_y] = a[a_index];
+#         }} else {{
+#             Asub[tid_x][tid_y] = 0.0;
+#         }}
+
+#         // Load B sub-matrix into shared memory
+#         if (j < N && current_k + tid_x < K) {{
+#             uint b_index;
+#             if (B_TRANS) {{
+#                 b_index = j * K + (current_k + tid_x);
+#             }} else {{
+#                 b_index = (current_k + tid_x) * N + j;
+#             }}
+#             Bsub[tid_x][tid_y] = b[b_index];
+#         }} else {{
+#             Bsub[tid_x][tid_y] = 0.0;
+#         }}
+
+#         // Synchronize to make sure the sub-matrices are loaded
+#         threadgroup_barrier(mem_flags::mem_threadgroup);
+
+#         // Multiply the two matrices together
+#         for (uint k = 0; k < DEPTH_SIZE; ++k) {{
+#             sum += Asub[tid_x][k] * Bsub[k][tid_y];
+#         }}
+
+#         // Synchronize to make sure that computation is done before loading new sub-matrices
+#         threadgroup_barrier(mem_flags::mem_threadgroup);
+#     }}
+
+#     // Write the result
+#     if (i < M && j < N) {{
+#         C[i * N + j] = sum;
+#     }}
+#     """
+    
+#     # Create a unique kernel name based on input shapes and transposition flags
+#     kernel_name = f"matmul_kernel_{M}_{K}_{N}_{'A_T' if A_trans else 'A_N'}_{'B_T' if B_trans else 'B_N'}"
+    
+#     print("[DEBUG] Creating metal_kernel with unique name:", kernel_name)
+#     kernel = mx.fast.metal_kernel(
+#         name=kernel_name,
+#         input_names=["a", "b"],
+#         output_names=["C"],
+#         source=source,
+#         header=header,
+#         ensure_row_contiguous=True,
+#     )
+    
+#     # Set grid and threadgroup sizes
+#     grid_x = (M + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+#     grid_y = (N + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+#     grid = (grid_x, grid_y, 3)
+#     threadgroup = (THREADGROUP_MEM_SIZE, THREADGROUP_MEM_SIZE, 3)
+    
+#     print(f"[DEBUG] Grid dimensions: grid_x={grid_x}, grid_y={grid_y}")
+#     print(f"[DEBUG] Threadgroup dimensions: {threadgroup}")
+    
+#     # Execute the kernel and return the result
+#     try:
+#         print("[DEBUG] Asserting input dtypes")
+#         assert a.dtype == b.dtype, f"Input dtypes do not match: a.dtype={a.dtype}, b.dtype={b.dtype}"
+#         assert a.dtype == mx.float32, "Only float32 dtype is supported with atomic operations."
+#         assert isinstance(kernel, Callable), "Kernel is not callable"
+        
+#         print("[DEBUG] Executing kernel")
+#         outputs = kernel(
+#             inputs=[a, b],
+#             template=[("T", a.dtype)],
+#             grid=grid,
+#             threadgroup=threadgroup,
+#             output_shapes=[(M, N)],
+#             output_dtypes=[a.dtype],
+#             verbose=False,  # Set to True to print the generated Metal code
+#         )
+#         print("[DEBUG] Metal kernel execution completed successfully")
+#         C = outputs[0]
+#         return C
+#     except AssertionError as ae:
+#         print(f"[ASSERTION ERROR] {ae}")
+#         raise
+#     except Exception as e:
+#         print(f"[ERROR] Kernel execution failed: {e}")
+#         print(f"[DEBUG] Error details: {type(e).__name__}: {str(e)}")
+#         raise
 
 @mx.compile
 def matmul_kernel(
@@ -64,123 +240,118 @@ def matmul_kernel(
     print("[DEBUG] Entering matmul_kernel function")
     
     # Validate input dimensions
-    ashape0 = a.shape[0]
-    ashape1 = a.shape[1]
-    bshape0 = b.shape[0]
-    bshape1 = b.shape[1]
-    assert ashape1 == bshape0, f"Inner dimensions must match: ashape1={ashape1}, bshape0={bshape0}"
+    if A_trans:
+        M = a.shape[1]
+        K = a.shape[0]
+    else:
+        M = a.shape[0]
+        K = a.shape[1]
+
+    if B_trans:
+        N = b.shape[0]
+        Kb = b.shape[1]
+    else:
+        N = b.shape[1]
+        Kb = b.shape[0]
+    
+    assert K == Kb, f"Inner dimensions must match: K={K}, Kb={Kb}"
     
     print(f"[DEBUG] Transposition: A_trans={A_trans}, B_trans={B_trans}")
     print(f"[DEBUG] Input dtypes: a.dtype={a.dtype}, b.dtype={b.dtype}")
-
+    
+    # Ensure we use float32 for atomic operations
+    if a.dtype != mx.float32 or b.dtype != mx.float32:
+        raise ValueError("Atomic operations require float32 data type.")
+    
     # Define block size (tile size)
-    THREADGROUP_MEM_SIZE = 3  # Ensure consistency with tests
-    DEPTH_SIZE = 8  # New dimension for 3D tiling
-
+    THREADGROUP_MEM_SIZE = 8
+    DEPTH_SIZE = 8
+    
     # Kernel header
     header = """
     #include <metal_stdlib>
     using namespace metal;
     """
-
-    print("[DEBUG] Defining kernel source with 3D tiling")
-    # Updated kernel source code with 3D tiling
+    
+    print("[DEBUG] Defining kernel source with conditional indexing")
     source = f"""
     uint gid_x = thread_position_in_grid.x;
     uint gid_y = thread_position_in_grid.y;
-    uint gid_z = thread_position_in_grid.z; // Added z-axis for 3D tiling
 
     uint tid_x = thread_position_in_threadgroup.x;
     uint tid_y = thread_position_in_threadgroup.y;
-    uint tid_z = thread_position_in_threadgroup.z; // Added z-axis for 3D tiling
 
-    uint i = gid_x;
-    uint j = gid_y;
-    uint z = gid_z;
+    uint i = gid_x;  // Row index
+    uint j = gid_y;  // Column index
 
     const uint THREADGROUP_MEM_SIZE = {THREADGROUP_MEM_SIZE};
     const uint DEPTH_SIZE = {DEPTH_SIZE};
 
-    // Shared memory allocations for 3D tiling
-    threadgroup float Asub[DEPTH_SIZE][THREADGROUP_MEM_SIZE][THREADGROUP_MEM_SIZE];
-    threadgroup float Bsub[DEPTH_SIZE][THREADGROUP_MEM_SIZE][THREADGROUP_MEM_SIZE];
+    threadgroup float Asub[THREADGROUP_MEM_SIZE][DEPTH_SIZE];
+    threadgroup float Bsub[DEPTH_SIZE][THREADGROUP_MEM_SIZE];
 
     float sum = 0.0;
 
-    const uint a_shape0 = {ashape0};
-    const uint a_shape1 = {ashape1};
-    const uint b_shape0 = {bshape0};
-    const uint b_shape1 = {bshape1};
+    const uint M = {M};
+    const uint N = {N};
+    const uint K = {K};
+
     const bool A_TRANS = {'true' if A_trans else 'false'};
     const bool B_TRANS = {'true' if B_trans else 'false'};
 
-    // Calculate the number of tiles in each dimension
-    uint tiles_x = (a_shape0 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
-    uint tiles_y = (b_shape1 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
-    uint tiles_z = (a_shape1 + DEPTH_SIZE * THREADGROUP_MEM_SIZE - 1) / (DEPTH_SIZE * THREADGROUP_MEM_SIZE);
+    // Calculate the number of tiles
+    uint num_tiles = (K + DEPTH_SIZE - 1) / DEPTH_SIZE;
 
-    for (uint tile = 0; tile < tiles_z; ++tile) {{
-        uint current_depth = tile * DEPTH_SIZE;
+    for (uint tile = 0; tile < num_tiles; ++tile) {{
+        uint current_k = tile * DEPTH_SIZE;
 
-        for (uint d = 0; d < DEPTH_SIZE; ++d) {{
-            if (current_depth + d < a_shape1) {{
-                // Load a tile of A into shared memory
-                uint a_col = current_depth + d;
-                if (i < a_shape0 && a_col < a_shape1) {{
-                    Asub[d][tid_y][tid_x] = A_TRANS ? a[a_col * a_shape0 + i] : a[i * a_shape1 + a_col];
-                }} else {{
-                    Asub[d][tid_y][tid_x] = 0.0;
-                }}
-
-                // Load a tile of B into shared memory
-                uint b_row = current_depth + d;
-                if (b_row < b_shape0 && j < b_shape1) {{
-                    Bsub[d][tid_y][tid_x] = B_TRANS ? b[j * b_shape0 + b_row] : b[b_row * b_shape1 + j];
-                }} else {{
-                    Bsub[d][tid_y][tid_x] = 0.0;
-                }}
-            }} else {{
-                Bsub[d][tid_x][tid_y] = 0.0;
-            }}   
-
-        }}
-
-        // Synchronize to ensure all tiles are loaded
+        // Load tiles into shared memory with coalesced accesses
+        Asub[tid_x][tid_y] = A_TRANS ? a[(current_k + tid_y) * M + i] : a[i * K + (current_k + tid_y)];
+        Bsub[tid_x][tid_y] = B_TRANS ? b[j * K + (current_k + tid_x)] : b[(current_k + tid_x) * N + j];
+        
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Perform multiplication for each depth slice
-        for (uint d = 0; d < DEPTH_SIZE; ++d) {{
-            sum += Asub[d][tid_y][tid_x] * Bsub[d][tid_y][tid_x];
+        // Utilize vectorized operations if possible
+        for (uint k = 0; k < DEPTH_SIZE; ++k) {{
+            sum += Asub[tid_x][k] * Bsub[k][tid_y];
         }}
+        
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
-    // Write the result to C
-    if (i < a_shape0 && j < b_shape1) {{
-        C[i * b_shape1 + j + z] = sum;
+    // Write the result with coalesced access
+    if (i < M && j < N) {{
+        C[i * N + j] = sum;
     }}
     """
+
+    # Create a unique kernel name based on input shapes and transposition flags
+    kernel_name = f"matmul_kernel_{M}_{K}_{N}_{'A_T' if A_trans else 'A_N'}_{'B_T' if B_trans else 'B_N'}"
     
-    print("[DEBUG] Creating metal_kernel")
+    print("[DEBUG] Creating metal_kernel with unique name:", kernel_name)
     kernel = mx.fast.metal_kernel(
-        name="matmul_kernel",
+        name=kernel_name,
         input_names=["a", "b"],
         output_names=["C"],
         source=source,
         header=header,
         ensure_row_contiguous=True,
     )
-
+    
     # Set grid and threadgroup sizes
-    grid_x = (bshape1 + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
-    grid_y = (ashape0 + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
-    grid = (grid_x, grid_y, 1)
+    grid_x = (M + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+    grid_y = (N + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+    grid = (grid_x, grid_y, 3)
     threadgroup = (THREADGROUP_MEM_SIZE, THREADGROUP_MEM_SIZE, 3)
+    
     print(f"[DEBUG] Grid dimensions: grid_x={grid_x}, grid_y={grid_y}")
+    print(f"[DEBUG] Threadgroup dimensions: {threadgroup}")
     
     # Execute the kernel and return the result
     try:
         print("[DEBUG] Asserting input dtypes")
         assert a.dtype == b.dtype, f"Input dtypes do not match: a.dtype={a.dtype}, b.dtype={b.dtype}"
+        assert a.dtype == mx.float32, "Only float32 dtype is supported with atomic operations."
         assert isinstance(kernel, Callable), "Kernel is not callable"
         
         print("[DEBUG] Executing kernel")
@@ -189,16 +360,17 @@ def matmul_kernel(
             template=[("T", a.dtype)],
             grid=grid,
             threadgroup=threadgroup,
-            output_shapes=[(ashape0, bshape1)],
+            output_shapes=[(M, N)],
             output_dtypes=[a.dtype],
             verbose=False,  # Set to True to print the generated Metal code
         )
         print("[DEBUG] Metal kernel execution completed successfully")
         C = outputs[0]
         return C
+    except AssertionError as ae:
+        print(f"[ASSERTION ERROR] {ae}")
+        raise
     except Exception as e:
         print(f"[ERROR] Kernel execution failed: {e}")
         print(f"[DEBUG] Error details: {type(e).__name__}: {str(e)}")
         raise
-
-print("[DEBUG] matmul_kernel function defined")
