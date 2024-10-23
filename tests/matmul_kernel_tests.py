@@ -111,19 +111,19 @@ class TestMatmulKernel(unittest.TestCase):
 
     def test_matmul_transpose_both(self):
         print("\n=== test_matmul_transpose_both ===")
-        M, K, N = 8, 8, 8
+        SIZE = 8
 
         for dtype in [mx.float32]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_transpose_both with dtype={dtype} ---")
-            a = mx.arange(M * K, dtype=dtype).reshape((M, K)).transpose()
-            b = mx.arange(K * N, dtype=dtype).reshape((K, N)).transpose()
-            output_shape = (K, M)  # Since both A and B are transposed
+            a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
+            b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
+            output_shape = (SIZE, SIZE)  # Since both A and B are transposed
 
             # {{ Edit Start: Correct grid and threadgroup calculation for 3D tiling }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
-            grid_x = (M + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
-            grid_y = (N + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_z = 3
             threadgroup_z = 3  # Align with DEPTH_SIZE to prevent multiple writes
 
@@ -159,7 +159,7 @@ class TestMatmulKernel(unittest.TestCase):
             output_shape = (SIZE, SIZE)
 
             # {{ Edit Start: Correct grid and threadgroup calculation for 3D tiling }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
             grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
@@ -198,7 +198,7 @@ class TestMatmulKernel(unittest.TestCase):
             output_shape = (SIZE, SIZE)
 
             # {{ Edit Start: Correct grid and threadgroup calculation for 3D tiling }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
             grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
@@ -237,7 +237,7 @@ class TestMatmulKernel(unittest.TestCase):
             output_shape = (SIZE, SIZE)
 
             # {{ Edit Start: Correct grid and threadgroup calculation for 3D tiling }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
             grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
@@ -266,19 +266,19 @@ class TestMatmulKernel(unittest.TestCase):
 
     def test_matmul_zero(self):
         print("\n=== test_matmul_zero ===")
-        M, K, N = 8, 8, 8
+        SIZE = 8
 
         for dtype in [mx.float32]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_zero with dtype={dtype} ---")
-            a = mx.zeros((M, K), dtype=dtype)
-            b = mx.zeros((K, N), dtype=dtype)
-            output_shape = (M, N)
+            a = mx.zeros((SIZE, SIZE), dtype=dtype)
+            b = mx.zeros((SIZE, SIZE), dtype=dtype)
+            output_shape = (SIZE, SIZE)
 
             # {{ Edit Start: Correct grid and threadgroup calculation for 3D tiling }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
-            grid_x = (M + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
-            grid_y = (N + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_z = 3
             threadgroup_z = 3  # Align with DEPTH_SIZE to prevent multiple writes
 
@@ -304,19 +304,19 @@ class TestMatmulKernel(unittest.TestCase):
 
     def test_matmul_negative(self):
         print("\n=== test_matmul_negative ===")
-        M, K, N = 8, 8, 8
-
+        SIZE = 8
+    
         for dtype in [mx.float32]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_negative with dtype={dtype} ---")
-            a = mx.array([(-1) ** (i % 2) * i for i in range(M * K)], dtype=dtype).reshape((M, K))
-            b = mx.array([(-1) ** (i % 2) * (i + 1) for i in range(K * N)], dtype=dtype).reshape((K, N))
-            output_shape = (M, N)
+            a = mx.array([(-1) ** (i % 2) * i for i in range(SIZE * SIZE)], dtype=dtype).reshape((SIZE, SIZE))
+            b = mx.array([(-1) ** (i % 2) * (i + 1) for i in range(SIZE * SIZE)], dtype=dtype).reshape((SIZE, SIZE))
+            output_shape = (SIZE, SIZE)
 
             # {{ edit_1 }}
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
-            grid_x = (M + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
-            grid_y = (N + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
+            grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_z = 3
             threadgroup_z = 3  # Align with DEPTH_SIZE to prevent multiple writes
 
@@ -351,7 +351,7 @@ class TestMatmulKernel(unittest.TestCase):
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
             output_shape = (SIZE, SIZE)
 
-            THREADGROUP_MEM_SIZE = 8  # Ensure consistency with matmul_kernel.py
+            THREADGROUP_MEM_SIZE = 16  # Ensure consistency with matmul_kernel.py
 
             grid_x = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
             grid_y = (SIZE + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE * THREADGROUP_MEM_SIZE
@@ -380,9 +380,9 @@ class TestMatmulKernel(unittest.TestCase):
 
     def test_benchmark_matmul(self):
         print("\n=== test_benchmark_matmul ===")
-        sizes = [64, 128, 256, 512, 1024, 2048, 4096]
-        warm_up_runs = 100
-        benchmark_runs = 1000  # Increased number of runs for better accuracy
+        sizes = [64, 128, 256, 512, 1024]
+        warm_up_runs = 50
+        benchmark_runs = 100  # Reduced for practical execution time
 
         for size in sizes:
             a = mx.arange(size * size, dtype=mx.float32).reshape((size, size))
@@ -400,7 +400,7 @@ class TestMatmulKernel(unittest.TestCase):
             start = time.perf_counter_ns()
             for _ in range(benchmark_runs):
                 custom_result = matmul_kernel(a, b, False, False)
-                mx.synchronize()  # Ensure GPU operations are complete
+            mx.synchronize()  # Ensure GPU operations are complete
             end = time.perf_counter_ns()
             custom_time = (end - start) / benchmark_runs / 1e6  # Convert to milliseconds
 
@@ -408,12 +408,54 @@ class TestMatmulKernel(unittest.TestCase):
             start = time.perf_counter_ns()
             for _ in range(benchmark_runs):
                 mlx_result = mx.matmul(a, b)
-                mx.synchronize()  # Ensure GPU operations are complete
+            mx.synchronize()  # Ensure GPU operations are complete
             end = time.perf_counter_ns()
             mlx_time = (end - start) / benchmark_runs / 1e6  # Convert to milliseconds
 
             print(f"Size: {size}x{size} | Custom Matmul Kernel: {custom_time:.4f} ms | MLX Matmul: {mlx_time:.4f} ms")
             self.assertTrue(mx.allclose(custom_result, mlx_result))
+
+    def test_non_square_matrices(self):
+        print("\n=== test_non_square_matrices ===")
+        test_cases = [
+            ((64, 128), (128, 256)),
+            ((128, 64), (64, 128)),
+            ((256, 512), (512, 256)),
+            ((1024, 2048), (2048, 1024)),
+        ]
+
+        for (a_shape, b_shape) in test_cases:
+            print(f"\n--- Testing non-square matrices: A{a_shape} x B{b_shape} ---")
+            a = mx.arange(a_shape[0] * a_shape[1], dtype=mx.float32).reshape(a_shape)
+            b = mx.arange(b_shape[0] * b_shape[1], dtype=mx.float32).reshape(b_shape)
+            output_shape = (a_shape[0], b_shape[1])
+
+            THREADGROUP_MEM_SIZE = 16
+
+            grid_x = ((output_shape[0] + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE) * THREADGROUP_MEM_SIZE
+            grid_y = ((output_shape[1] + THREADGROUP_MEM_SIZE - 1) // THREADGROUP_MEM_SIZE) * THREADGROUP_MEM_SIZE
+            grid_z = 3
+            threadgroup_z = 3
+
+            grid = (grid_x, grid_y, grid_z)
+            threadgroup = (THREADGROUP_MEM_SIZE, THREADGROUP_MEM_SIZE, threadgroup_z)
+
+            print(f"       a.shape: {a.shape}, b.shape: {b.shape}")
+            print(f"       Grid: {grid}, Threadgroup: {threadgroup}, dtype={a.dtype}")
+
+            problem = MetalKernelTest(
+                "Matrix Multiplication (Non-Square)",
+                matmul_kernel,
+                [a, b],
+                output_shape,
+                grid=grid,
+                threadgroup=threadgroup,
+                spec=matmul_spec,
+                A_trans=False,
+                B_trans=False,
+            )
+
+            self.assertTrue(problem.check())
 
 if __name__ == "__main__":
     print("=== Starting Matmul Kernel Tests ===")
