@@ -1,6 +1,6 @@
 # Metal Flex Attention 
 
-This project demonstrates the implementation of Flex Attention using the MLX framework with custom Metal source kernels. Flex Attention is an efficient attention mechanism designed to reduce memory usage and computational overhead, making it suitable for large-scale models and long sequences.
+This repository demonstrates the implementation of Flex Attention using the MLX framework with custom Metal source kernels. Flex Attention is an efficient attention mechanism designed to reduce memory usage and computational overhead, making it suitable for large-scale models and long sequences.
 
 ## Features
 
