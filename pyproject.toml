@@ -3,28 +3,54 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flash_attention_mlx"
+name = "metal_flex_attention"
 version = "0.1.0"
-description = "Flash Attention implementation using the MLX framework"
+description = "Flex Attention Mechanism for MLX using Metal Kernels"
 readme = "README.md"
 authors = [
     {name = "Jckwind", email = "jckwind11@gmail.com"},
+    {name = "Ishaan Bhambra", email = "ibhambra6@gmail.com"},
+    {name = "The Proxy Company", email = "admin@what-is-the-proxy.com"},
 ]
-license = {text = "MIT"}
+license = {text = "Apache 2.0"}
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache 2.0 License",
+    "Operating System :: macOS",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 dependencies = [
-    "mlx",
-    "torch",
-    "numpy",
+    "mlx>=0.0.8",
+    "numpy>=1.24.0",
+    "pytest>=7.0.0",
+    "typing-extensions>=4.0.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "pytest-cov>=4.0.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Jckwind/MLX-FlashAttention"
+Homepage = "https://github.com/TheProxyCompany/metal-flex-attention"
+Repository = "https://github.com/TheProxyCompany/metal-flex-attention.git"
+Issues = "https://github.com/TheProxyCompany/metal-flex-attention/issues"
 
 [tool.setuptools]
-packages = ["flash_attention"]
+packages = ["metal_flex_attention"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+multi-line-output = 3
