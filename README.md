@@ -27,7 +27,7 @@ To get started with Metal Flex Attention:
 ```bash
 git clone https://github.com/TheProxyCompany/metal-flex-attention
 cd metal-flex-attention
-pip install .
+pip install -e .
 ```
 
 ## Features

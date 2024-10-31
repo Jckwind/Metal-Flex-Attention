@@ -113,7 +113,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_transpose_both ===")
         SIZE = 8
 
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_transpose_both with dtype={dtype} ---")
             a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
@@ -152,7 +152,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_simple ===")
         SIZE = 8
 
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_simple with dtype={dtype} ---")
             a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
@@ -191,7 +191,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_transposed_a ===")
         SIZE = 8
 
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_transposed_a with dtype={dtype} ---")
             a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
@@ -230,7 +230,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_transposed_b ===")
         SIZE = 8
 
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_transposed_b with dtype={dtype} ---")
             a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE)).transpose()
@@ -268,7 +268,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_zero ===")
         SIZE = 8
 
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_zero with dtype={dtype} ---")
             a = mx.zeros((SIZE, SIZE), dtype=dtype)
             b = mx.zeros((SIZE, SIZE), dtype=dtype)
@@ -306,7 +306,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_negative ===")
         SIZE = 8
     
-        for dtype in [mx.float32]:  # Only float32 is supported now
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now
             print(f"\n--- Testing matmul_negative with dtype={dtype} ---")
             a = mx.array([(-1) ** (i % 2) * i for i in range(SIZE * SIZE)], dtype=dtype).reshape((SIZE, SIZE))
             b = mx.array([(-1) ** (i % 2) * (i + 1) for i in range(SIZE * SIZE)], dtype=dtype).reshape((SIZE, SIZE))
@@ -345,7 +345,7 @@ class TestMatmulKernel(unittest.TestCase):
         print("\n=== test_matmul_large ===")
         SIZE = 256
 
-        for dtype in [mx.float32]:  # Only float32 is supported now due to atomic operations
+        for dtype in [mx.float32, mx.float16]:  # Only float32 is supported now due to atomic operations
             print(f"\n--- Testing matmul_large with dtype={dtype} ---")
             a = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))
             b = mx.arange(SIZE * SIZE, dtype=dtype).reshape((SIZE, SIZE))

@@ -45,7 +45,7 @@ Repository = "https://github.com/TheProxyCompany/metal-flex-attention.git"
 Issues = "https://github.com/TheProxyCompany/metal-flex-attention/issues"
 
 [tool.setuptools]
-packages = ["metal_flex_attention"]
+packages = ["flash_attention"]
 
 [tool.black]
 line-length = 88
